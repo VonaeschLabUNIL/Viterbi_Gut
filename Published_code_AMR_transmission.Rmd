@@ -1,0 +1,268 @@
+---
+title: "Transmission of AMR"
+author: "Margaux Crézé"
+date: '2025-05-02'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load library
+```{r}
+library(Biostrings)
+library(devtools)
+library(phyloseq)
+library(tidyr)
+library(plyr)
+library(readxl)
+library(writexl)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(vegan)
+library(ape)
+library(ggpubr)
+library(ggsignif)
+library(pheatmap)
+library(picante)
+library(magrittr)
+library(RColorBrewer)
+library(ggcorrplot)
+library(ComplexHeatmap)
+library(MicEco)
+library(purrr)
+library(writexl)
+library(readr)
+library(dplyr)
+library(stringr)
+```
+
+# 1. ABRicate
+## 1.1 Loading the database
+```{r}
+abricate = read_tsv("Supplementary_table19.tsv", col_names = TRUE)
+```
+
+## 1.2 Cleaning the abricate data
+```{r}
+# Extracting MAGs name and database name
+abricate <- abricate %>%
+  dplyr::mutate(MAGs = str_extract(`#FILE`, "(?<=Abricate_out/)[^/]+"),
+                Database = str_extract(`#FILE`, "(?<=\\.)[^./]+(?=\\.tab)")
+                )
+
+# Replace all the dots values with NA values
+abricate[] <- lapply(abricate, function(x) {
+  if (is.factor(x)) x <- as.character(x)
+  if (is.character(x)) x[x == "."] <- NA
+  x
+})
+
+# Remove all the empty lines
+abricate <- abricate %>%
+  filter(NUM_FOUND != 0)
+
+# Remove all the empty columns
+abricate <- abricate %>%
+  select(where(~ !all(is.na(.))))
+
+# Reorder the columns
+abricate <- abricate %>%
+  select(MAGs, Database, NUM_FOUND,everything())
+```
+
+## 1.3 Merging with transmission data and metadata
+```{r}
+# Check if all MAGs are found in genome
+all(abricate$MAGs %in% instrain_related$genome) # TRUE
+
+# Merge abricate with instrain_related using a left join
+abricate <- abricate %>%
+  left_join(instrain_related %>% select(genome, VG_ID, howborn, classif, ATB_med_M, Species), 
+            by = c("MAGs" = "genome"))
+
+# Merge metadata to add district
+metadata <- read_tsv("VG_metadata.tsv")
+
+instrain_related <- instrain_related %>%
+  left_join(metadata %>% select(VG_ID, district, district_cat), by = "VG_ID", relationship = "many-to-many") %>%
+  distinct()
+
+# Number of transmitted MAGs with ARG mapped on them
+n_distinct(abricate$MAGs)
+
+# Number of related pairs with ARG found
+n_distinct(abricate$VG_ID)
+```
+
+# 2. Effect of co-variables on ARGs carriage
+```{r}
+# Create an ARG column (Yes/No)
+abricate <- abricate %>%
+  dplyr::mutate(ARG = if_else(if_any(c(`tet(Q)_1`,
+                                       `cepA_beta-lactamase`,
+                                       `(Tet)tetW`,
+                                       `(Bla)cepA-49`,
+                                       `cepA-49_1`),
+                                     ~ !is.na(.)
+                                     ),
+                              "Yes", "No")
+                )
+
+# Add it to instrain_related table
+instrain_related <- instrain_related %>%
+  left_join(abricate %>%
+      select(VG_ID, ARG) %>%
+      distinct(VG_ID, .keep_all = TRUE),
+      by = "VG_ID"
+  )
+
+instrain_related <- instrain_related %>%
+  mutate(ARG = if_else(is.na(ARG), "No", ARG)) %>%
+  mutate(ATB_med_M = if_else(is.na(ATB_med_M), "No", ATB_med_M))
+
+
+# Expected classif proportion
+exp_prop_classif = instrain_related %>%
+  distinct(VG_ID, .keep_all = TRUE)
+exp_prop_classif = as.data.frame(exp_prop_classif)
+
+exp_prop_classif = exp_prop_classif %>%
+  mutate(ARG = factor(ARG, levels = c("No", "Yes")),
+         ATB_med_M = factor(ATB_med_M, levels = c("No", "Yes")))
+
+table(exp_prop_classif$classif)
+```
+
+## 2.1 Effect of classif on ARG carriage
+```{r}
+tab_classif <- table(exp_prop_classif$ARG, exp_prop_classif$classif)
+tab_classif
+
+chisq.test(tab_classif) 
+fisher.test(tab_classif)
+```
+
+## 2.2 Effect of district Antibiotics (M) on ARG carriage
+```{r}
+tab_atb <- table(exp_prop_classif$ARG, exp_prop_classif$ATB_med_M)
+tab_atb
+
+chisq.test(tab_atb)
+fisher.test(tab_atb) 
+```
+
+## 2.3 Effect of district on ARG carriage
+```{r}
+# District
+tab_dis <- table(exp_prop_classif$ARG, exp_prop_classif$district)
+tab_dis
+
+chisq.test(tab_dis)
+fisher.test(tab_dis)
+
+# District categories
+tab_dis_c <- table(exp_prop_classif$ARG, exp_prop_classif$district_cat)
+tab_dis_c
+
+chisq.test(tab_dis_c)
+
+fisher.test(tab_dis_c)
+```
+
+## 2.3 Combined effects on ARG carriage
+```{r}
+# Effect of district_cat adjusted by classif (= Is the probability that a transmitted strain carries an ARG associated with district (rural vs urban) and/or nutritional classification, after adjusting for each other?)
+# Set reference = normally nourished babies in urban districts
+exp_prop_classif <- exp_prop_classif %>%
+  mutate(district_cat = relevel(factor(district_cat), ref = "Urban"))
+
+model <- glm(ARG ~ district_cat + classif,
+             data = exp_prop_classif,
+             family = binomial)
+
+summary(model)
+exp(cbind(OR = coef(model), confint(model)))
+
+model_tidy <- tidy(model, conf.int = TRUE, exponentiate = TRUE) %>%
+  filter(term != "(Intercept)") %>%   # remove intercept
+  mutate(
+    term = recode(term,
+                  "district_catRural" = "Rural vs Urban",
+                  "classifOvernourished" = "ON vs NN",
+                  "classifUndernourished" = "UN vs NN")
+  )
+
+
+forest = ggplot(model_tidy, aes(x = estimate, y = term)) +
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50") +
+  geom_text(aes(label = sprintf("%.2f (%.2f–%.2f)", estimate, conf.low, conf.high)),
+            vjust = -1.5,
+            #hjust = -0.1,
+            size = 6) +
+  scale_x_log10() +
+  labs(x = "Odds ratio (log scale)",
+       y = NULL
+  ) +
+  theme_classic(base_size = 14) +
+  theme(axis.text.x = element_text(size = 16),
+        axis.title.x = element_text(size = 16),
+        axis.text.y = element_text(size = 16))
+
+rm(model)
+```
+
+## 2.4 Remove unnecessary data
+```{r}
+rm(tab_atb, tab_classif, tab_dis, tab_dis_c)
+```
+
+# 3. By species ARG carriage
+```{r}
+# Reshape to long format: keep Species and resistance genes
+resistance_long_C <- abricate %>%
+  pivot_longer(cols = -c(MAGs, VG_ID, Database, NUM_FOUND, `#FILE`, Species, howborn, classif, ATB_med_M, ARG), #, district, district_cat
+               names_to = "Resistance_Gene",
+               values_to = "Presence"
+               )
+
+# Filter for Present Genes (non-NA) and count Occurrences by Species and Resistance Gene
+resistance_counts_C <- resistance_long_C %>%
+  filter(!is.na(Presence)) %>%
+  dplyr::count(Species, Resistance_Gene, howborn, classif, ATB_med_M, ARG)
+
+# Plot data
+length(unique(resistance_counts_C$Resistance_Gene)) # Make a color palette with 5 colors
+
+resistance_counts_C_filt <- resistance_counts_C %>%
+  filter(!is.na(Species)) # Remove the rows for which Species = NA
+
+resistance_counts_C_filt$Species <- str_wrap(resistance_counts_C_filt$Species, width = 30)
+
+res = ggplot(resistance_counts_C_filt, aes(x = classif, y = n, fill = Resistance_Gene)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(palette = "Pastel1") +
+  scale_x_discrete(labels = c("Normally nourished" = "NN",
+                            "Overnourished" = "ON",
+                            "Undernourished" = "UN")) +
+  labs(title = NULL, # "Resistance Genes per Species"
+       x = NULL, # "Species"
+       y = "Number of Genes Detected",
+       fill = "Resistance Gene") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 16), # angle = 45, hjust = 1
+        axis.title.x = element_text(size = 20),
+        axis.text.y = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        strip.text = element_text(face = "italic", size = 21),
+        legend.position = "right") +
+  facet_wrap(~ Species)
+
+rm(res)
+```
+
+

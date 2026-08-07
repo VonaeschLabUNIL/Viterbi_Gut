@@ -1,0 +1,1242 @@
+---
+title: "Published_code_transmission_Instrain"
+author: "Margaux Crézé"
+date: "2026-08-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#For this analysis, we took the 225 children samples (1wpp) and the 245 mother samples (preg) available from Viterbi Gut. It represents 208 related pairs of mother and child. We performed InStrain which maps reads against MAGs database to generate one profile per sample. We then compared the profiles between themselves by pair, comparing only within related pairs of mother and child. We found out that 128/208 pairs of mother and child share something (not necessarily the same strain, this is filtered below with InStrain thresholds).
+
+# 1. Packages
+```{r}
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(writexl)
+library(stringr)
+library(gtsummary)
+library(ggpubr)
+library(rstatix)
+library(ComplexUpset)
+library(forcats)  # Needed for fct_reorder()
+library(ComplexHeatmap)
+library(svglite)
+```
+
+# 2. Import data
+```{r}
+# 1. Import transmission data
+setwd("your/directory")
+
+instrain_related <- read.delim('Supplementary_table6.tsv') %>%
+  mutate(genome = str_replace(genome, '.fasta', '')) %>%
+  mutate(genome = str_replace(genome, '.fa', '')) %>%
+  mutate(name1 = str_replace(name1, '.sorted.bam', '')) %>%
+  mutate(name2 = str_replace(name2, '.sorted.bam', ''))
+
+# 2. Import shotgun data
+tax_table_ra <- read.delim("Supplementary_table3.txt", skip = 1)
+
+# Abundance table - relative abundances
+  abun_table_ra <- cbind(str_split_fixed(tax_table_ra$clade_name, "\\|[p,c,o,f,g,s,t]__", 8),tax_table_ra)
+  abun_table_ra <- as.data.frame(abun_table_ra)
+  abun_table_ra[,1] <- str_remove(abun_table_ra[,1], "k__")
+  abun_table_ra <- abun_table_ra[-(which(abun_table_ra[,8] == "")),] 
+  
+# Changing column name of taxonomy
+  colnames(abun_table_ra)[1:8] <- c("Kingdom", "Phylum", "Class","Order","Family","Genus","Species", "SGB")
+  abun_table_ra <- abun_table_ra[,-9]
+# Clear the column name of samples
+  colnames(abun_table_ra) <- str_remove(colnames(abun_table_ra), "_metaphlan")
+  colnames(abun_table_ra) <- str_remove(colnames(abun_table_ra), "r")
+  colnames(abun_table_ra) <- str_remove(colnames(abun_table_ra), "t") 
+  
+  
+# 3. Import CheckM infos of MAGS
+CheckM_C <- read.delim('Supplementary_table7.tsv')
+CheckM_M <- read.delim('Supplementary_table8.tsv')
+CheckM = rbind(CheckM_C, CheckM_M)
+rm(CheckM_C, CheckM_M)
+
+
+# 4. Import taxonomy of MAGs - MetaPhlan/PhyloPhlan
+taxMAGs = read.delim('Supplementary_table9.tsv')
+  
+taxMAGs <- taxMAGs %>%
+  mutate(Unassigned = ifelse(grepl("is close to an SGB not present in the SGB", X.input_bin), # Identify unassigned bins
+                             "Not present in DB",
+                             ""
+                             ),
+         X.input_bin = sub(" is close to an SGB not present in the SGB.*$", "", X.input_bin), # Clean bin names (remove trailing message)
+         avg_dist = sub("^.*:(\\d+\\.\\d+)$", "\\1", X.u.k._.S.G.F.GBid.taxa_level.taxonomy.avg_dist), # Extract avg_dist (value after last :)
+         X.u.k._.S.G.F.GBid.taxa_level.taxonomy.avg_dist = sub(":[0-9\\.]+$", "", X.u.k._.S.G.F.GBid.taxa_level.taxonomy.avg_dist), # Remove avg_dist from taxonomy column
+         avg_dist = as.numeric(avg_dist) # Convert to numeric
+         ) %>%
+  dplyr::rename("MAG" = "X.input_bin",
+         "Taxonomy" = "X.u.k._.S.G.F.GBid.taxa_level.taxonomy.avg_dist")
+  
+taxMAGs <- taxMAGs %>%
+  separate(Taxonomy,
+           into = c("SGB", "Taxlevel", "Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species", "Strain"),
+           sep = "[:|]",
+           fill = "right",
+           remove = FALSE
+           ) %>%
+  mutate(across(c(Kingdom, Phylum, Class, Order, Family, Genus, Species), # Remove prefixes such as k__, p__, c__ etc.
+                ~ str_replace(., "^[a-z]__", "")),
+         Kingdom = ifelse(Unassigned != "", Unassigned, Kingdom),
+         Strain = gsub("^t__", "", Strain) # remove leading "t__"
+         ) %>%
+  select(-c(Taxonomy, SGB, Taxlevel, Unassigned))
+
+# Modify PhyloPhlan taxonomy to match MetaPhlan taxonomy based on SGB matching
+updates <- abun_table_ra %>%
+  filter(SGB %in% c("SGB1613", "SGB1626")) %>%
+  select(SGB, Species)
+
+taxMAGs <- taxMAGs %>%
+  left_join(updates, by = c("Strain" = "SGB"), suffix = c("", ".new")) %>%
+  mutate(Species = if_else(!is.na(Species.new), Species.new, Species)) %>%
+  select(-Species.new)
+
+taxMAGs <- taxMAGs %>% #replace SGB14824 by SGB14824_group
+  mutate(Strain = if_else(Strain == "SGB14824",
+                          "SGB14824_group",
+                          Strain))
+
+# 5. Merge CheckM and taxMAGs to get the needed infos
+CheckM_selected <- CheckM %>% 
+  select(Bin.Id, Completeness, Contamination)
+
+genomeTaxonomy <- left_join(taxMAGs, CheckM_selected, by = c("MAG" = "Bin.Id"))
+sum(is.na(genomeTaxonomy$Species)) # 4253 not assigned species with PhyloPhlan
+
+
+# Remove unnecessry objects
+rm(tax_table_ra, CheckM_selected, CheckM, taxMAGs, updates)
+```
+
+# 3. Same strain filter and adding metadata
+```{r}
+# filtering dataset to only include strain-sharing comparisons based on instrain recommended cutoffs
+instrain_related_samestrain <- instrain_related %>%
+  filter(popANI >= 0.99999 & percent_compared >= 0.5)
+# There are 131 same strain events
+
+# Remove unnecessary objects
+rm(instrain_related)
+
+# Add sample and taxonomy information to strain-sharing events
+instrain_related_samestrain <- instrain_related_samestrain %>%
+  left_join(genomeTaxonomy %>% 
+              select(MAG, Completeness, Contamination, Kingdom, Phylum, Class, Order, Family, Genus, Species, Strain), 
+            by = c('genome' = 'MAG')) 
+sum(is.na(instrain_related_samestrain$Strain)) # 24 transmitted MAGs for which the taxonomy has not been assigned
+
+
+# Add VG_ID column by extracting the number and appending it to 'VG'
+instrain_related_samestrain <- instrain_related_samestrain %>%
+  mutate(VG_ID = paste0("VG", gsub("^.*([0-9]{3}).*$", "\\1", name1)))
+
+# Add some metadata
+Incv <- read_excel("VG_metadata_inc.xlsx")
+w1ppv <- read_excel("VG_metadata_1wpp.xlsx")
+
+Incv_selected = Incv %>%
+  select(VG_ID, classif)
+
+w1ppv_selected <- w1ppv %>%
+  distinct(VG_ID, .keep_all = TRUE) %>%
+  select(VG_ID, howborn, ATB_med_M, ATB_med_C)
+
+# Add antibiotics = yes for all c-section births
+w1ppv_selected <- w1ppv_selected %>%
+  mutate(ATB_med_M = case_when(howborn %in% c("Planned cesarian section", "Unplanned cesarian section") ~ "Yes",
+    TRUE ~ ATB_med_M  # keep original value otherwise
+    ))
+
+# Add antibiotics = no for all the NA values
+w1ppv_selected <- w1ppv_selected %>%
+  mutate(ATB_med_M = if_else(is.na(ATB_med_M), "No", ATB_med_M))
+
+instrain_related_samestrain = left_join(instrain_related_samestrain, Incv_selected, by = "VG_ID")
+instrain_related_samestrain = left_join(instrain_related_samestrain, w1ppv_selected, by = "VG_ID")
+
+rm(Incv_selected, w1ppv_selected)
+
+# Reorder columns in the dataframe
+instrain_related_samestrain <- instrain_related_samestrain %>%
+  select(genome, name1, name2, VG_ID, howborn, classif, ATB_med_M, ATB_med_C, Kingdom, Phylum, Class, Order, Family, Genus, Species, Strain, everything())
+
+# Number of SGB (~ strain) per Species
+species_multiple_strains <- instrain_related_samestrain %>%
+  filter(!is.na(Strain)) %>%           # ignore NA strains
+  dplyr::group_by(Species) %>%
+  dplyr::summarise(n_strains = n_distinct(Strain)) %>%
+  filter(n_strains >= 2) %>%           # keep only Species with ≥ 2 strains
+  dplyr::pull(Species)
+print(species_multiple_strains) 
+
+rm(species_multiple_strains)
+```
+
+
+# 4. Representativeness of the dereplicated MAGs used for transmission events
+## 4.1 Children's MAGs
+```{r}
+CoverM = read.delim("Supplementary_table10.txt")
+
+# Remove last rows which are not useful
+CoverM = CoverM[-c(226:229),]
+
+# Rename column
+CoverM = CoverM %>%
+  dplyr::rename(Coverage = Percentage.reads.Mapped.on.representative.MAGs..dereplicated.)
+
+# Remove % and convert to numeric
+CoverM$Coverage <- as.numeric(sub("%", "", CoverM$Coverage))
+
+# Calculate mean coverage
+mean_coverage <- mean(CoverM$Coverage)
+
+# Map the coverage
+coverm = ggplot(CoverM, aes(x = Sample, y = Coverage)) +
+  geom_bar(stat = "identity", fill = "black") + #, width = 0.2
+  geom_hline(yintercept = mean_coverage, color = "red") +
+  theme_minimal() +
+  labs(title = "Percentage of reads mapping on representative dereplicated MAGs",
+       x = "Sample",
+       y = "Mapping percentage") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.length.x = element_blank(),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        axis.text.y = element_text(size = 20),
+        plot.title = element_blank())
+
+rm(CoverM, mean_coverage, coverm)
+```
+
+## 4.2 Mother's MAGs
+```{r}
+CoverM = read.delim("Supplementary_table11.txt")
+
+# Rename column
+CoverM = CoverM %>%
+  dplyr::rename(Coverage = Percentage.reads.Mapped.on.representative.MAGs..dereplicated.)
+
+# Remove % and convert to numeric
+CoverM$Coverage <- as.numeric(sub("%", "", CoverM$Coverage))
+
+# Calculate mean coverage
+mean_coverage <- mean(CoverM$Coverage)
+
+# Map the coverage
+coverm = ggplot(CoverM, aes(x = Sample, y = Coverage)) +
+  geom_bar(stat = "identity", fill = "black") + #, width = 0.2
+  geom_hline(yintercept = mean_coverage, color = "red") +
+  theme_minimal() +
+  labs(title = "Percentage of reads mapping on representative dereplicated MAGs",
+       x = "Sample",
+       y = "Mapping percentage") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.length.x = element_blank(),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        axis.text.y = element_text(size = 20),
+        plot.title = element_blank())
+
+rm(CoverM, mean_coverage, coverm)
+```
+
+# 5. Transmitted bacteria within related pairs
+```{r}
+unique_rows <- unique(instrain_related_samestrain$VG_ID)
+length(unique_rows)
+print(unique_rows)
+# There are 59 pairs of related mother and child who share at least 1 same strain
+
+table(instrain_related_samestrain$Genus)
+table(instrain_related_samestrain$Species)
+table(instrain_related_samestrain$Strain)
+
+# Create a frequency plot for the shared species within related dyads
+shared_species = instrain_related_samestrain %>%
+    ggplot(aes(x = reorder(Species, Species, function(x) -length(x)))) +  # Reorder by frequency
+    geom_bar(fill = "grey", color = "black") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, face="italic")) +
+    labs(title = NULL, # "Frequency of transmitted species within related pais
+         x = "Transmitted species within related pairs",
+         y = "Frequency")
+
+unique_rows <- unique(instrain_related_samestrain$Species)
+length(unique_rows)
+print(unique_rows)
+
+# Create a frequency plot for the shared strains within related dyads
+# Create a new label column
+instrain_related_samestrain <- instrain_related_samestrain %>%
+  mutate(Strain_Species = paste0(Species, " (", Strain, ")"))
+
+# Plot with the new combined label
+shared_strain <- instrain_related_samestrain %>%
+  ggplot(aes(x = reorder(Strain_Species, Strain_Species, function(x) -length(x)))) +
+  geom_bar(fill = "grey", color = "black") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, face="italic")) +
+  labs(title = NULL, #"Frequency of transmitted strain within related pairs"
+       x = "Transmitted strains within related pairs",
+       y = "Number of transmission events")
+
+unique_rows <- unique(instrain_related_samestrain$Strain_Species)
+length(unique_rows)
+print(unique_rows)
+table(instrain_related_samestrain$Strain_Species)
+
+# Create a frequency plot for the shared genus within related dyads
+shared_genus = instrain_related_samestrain %>%
+    ggplot(aes(x = reorder(Genus, Genus, function(x) -length(x)))) +  # Reorder by frequency
+    geom_bar(fill = "grey", color = "black") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, face="italic")) +
+    labs(title = "Frequency of transmitted genus within related pairs",
+         x = "Transmitted genus within related pairs",
+         y = "Number of transmission events")
+
+# All transmission events
+transmission_counts_all <- instrain_related_samestrain %>%
+  group_by(VG_ID) %>%  # Group by mother-child pair (VG_ID)
+  dplyr::summarise(n_transmissions = n()) # Count the number of rows per pair
+
+mean_n_transmission <- mean(transmission_counts_all$n_transmissions, na.rm = TRUE)
+print(mean_n_transmission)  # 2.22 strains transmitted on average in a related pair
+
+transmission_counts_byclassif <- instrain_related_samestrain %>%
+  group_by(VG_ID, classif) %>%  # Group by mother-child pair (VG_ID) and classif
+  dplyr::summarise(n_transmissions = n(), .groups = "drop")  # Count transmissions and keep classif
+
+avg_transmission_by_classif <- transmission_counts_byclassif %>%
+  group_by(classif) %>%  # Group by classif
+  dplyr::summarise(avg_transmissions = mean(n_transmissions), .groups = "drop")  # Calculate mean
+
+# Remove unecessary objects
+rm(unique_rows,shared_species, shared_strain, shared_genus, transmission_counts_all, mean_n_transmission, transmission_counts_byclassif, avg_transmission_by_classif)
+```
+
+
+## 5.1 Plot the transmitted strains in function of their relative abundance in each individual
+```{r}
+# Reformat the abundance table to have all the strains as columns, then a column "Sample", then a column "individual"
+# abun_table_ra_1 <- abun_table_ra %>%
+#   mutate(Strain_Species = paste0(Species, " (", SGB, ")")) # Create a new label column
+
+abun_table_ra_1 = abun_table_ra
+rownames(abun_table_ra_1) = abun_table_ra_1$SGB
+
+# rownames(abun_table_ra_1) = abun_table_ra_1$Strain_Species
+abun_table_ra_1 = abun_table_ra_1[,-c(1:8)]
+# abun_table_ra_1 = abun_table_ra_1[,-473]
+
+abun_table_ra_t = t(abun_table_ra_1)
+abun_table_ra_t = as.data.frame(abun_table_ra_t)
+abun_table_ra_t$Sample = rownames(abun_table_ra_t)
+
+abun_table_ra_t <- abun_table_ra_t %>%
+  mutate(individual = case_when(startsWith(Sample, "C") ~ "Child",
+                                startsWith(Sample, "M") ~ "Mother",
+                                TRUE ~ NA_character_
+                                ))
+
+# Filter the abundance table to transmitted strains
+transmitted_strains <- instrain_related_samestrain$Strain
+transmitted_ids <- transmitted_strains[transmitted_strains %in% colnames(abun_table_ra_t)]
+setdiff(transmitted_strains, transmitted_ids) # only NAs so all good
+
+ab_transmitted <- abun_table_ra_t %>%
+  select(Sample, individual, all_of(transmitted_ids))
+
+# Convert to long format
+ab_long <- ab_transmitted %>%
+  pivot_longer(cols = all_of(transmitted_ids),
+               names_to = "Strain",
+               values_to = "Abundance"
+               )
+
+# Compute averages for infants and mothers
+ab_summary <- ab_long %>%
+  dplyr::group_by(Strain, individual) %>%
+  dplyr::summarise(mean_ab = mean(Abundance, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::mutate(individual = ifelse(individual == "Child", "Child", "Mother"))
+
+# Add species taxonomy from MetaPhlan
+ab_summary <- ab_summary %>%
+  left_join(abun_table_ra %>% select(Species, SGB),
+            by = c("Strain" = "SGB")
+            )
+
+ab_summary <- ab_summary %>%
+  mutate(Strain_Species = paste0(Species, " (", Strain, ")")) # Create a new label column
+
+# Prepare for left–right plot (mirrored bars)
+ab_plot <- ab_summary %>%
+  mutate(mean_ab_plot = ifelse(individual == "Child", -mean_ab, mean_ab))
+
+# Plot
+abund_plot = ggplot(ab_plot, aes(x = mean_ab_plot, y = Strain_Species, fill = individual)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = round(mean_ab, 2),
+                x = ifelse(individual == "Child", mean_ab_plot - 1, mean_ab_plot + 1)),
+            size = 3) +
+  scale_x_continuous(labels = abs) +   # show positive labels on x-axis
+  scale_fill_manual(values = c("Child" = "#E5F0DB", "Mother" = "#E1EBF6")) +
+  theme_minimal() +
+  labs(title = NULL, # "Relative Abundance of Transmitted Strains"
+       x = "Relative Abundance (%)",
+       y = "") +
+  theme(axis.text.y = element_text(face = "italic"),
+        legend.position = "bottom",
+        panel.grid.major.y = element_blank()
+        )
+
+# Remove unecessary objects
+rm(ab_long, ab_plot, ab_summary, ab_transmitted, abun_table_ra_t, abun_table_ra_1, transmitted_ids, transmitted_strains, abund_plot)
+```
+
+## 5.2  Relative abundance comparison between mother and child
+```{r}
+# Reformat the abundance table to have all the strains as columns, then a column "Sample", then a column "individual"
+abun_table_ra_1 = abun_table_ra
+rownames(abun_table_ra_1) = abun_table_ra_1$SGB
+
+abun_table_ra_1 = abun_table_ra_1[,-c(1:8)] # Remove all the taxonomy columns
+
+abun_table_ra_t = t(abun_table_ra_1)
+abun_table_ra_t = as.data.frame(abun_table_ra_t)
+abun_table_ra_t$Sample = rownames(abun_table_ra_t)
+
+abun_table_ra_t <- abun_table_ra_t %>%
+  mutate(individual = case_when(startsWith(Sample, "C") ~ "Child",
+                                startsWith(Sample, "M") ~ "Mother",
+                                TRUE ~ NA_character_
+                                ))
+
+# Convert to long format
+ab_long <- abun_table_ra_t %>%
+  pivot_longer(cols = starts_with("SGB"),
+               names_to = "Strain",
+               values_to = "Abundance"
+               )
+
+ab_long = ab_long[,-c(1:11)] #remove eukaryotes
+
+# Compute averages abundance for infants and mothers
+ab_summary <- ab_long %>%
+  dplyr::group_by(Strain, individual) %>%
+  dplyr::summarise(mean_ab = mean(Abundance, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::mutate(individual = ifelse(individual == "Child", "Child", "Mother"))
+
+# filter the dataset for the top 50 strains in each individual
+top50_each <- ab_summary %>%
+  dplyr::group_by(individual) %>%
+  dplyr::slice_max(mean_ab, n = 50, with_ties = FALSE) %>%
+  ungroup()
+
+top_strains_union <- top50_each %>%
+  distinct(Strain)
+
+ab_summary_filt <- ab_summary %>%
+  semi_join(top_strains_union, by = "Strain")
+
+# Add species taxonomy from MetaPhlan
+ab_summary_filt <- ab_summary_filt %>%
+  left_join(abun_table_ra %>% select(Species, SGB),
+            by = c("Strain" = "SGB")
+            )
+
+# Create a new label column
+ab_summary_filt <- ab_summary_filt %>%
+  mutate(Strain_Species = paste0(Species, " (", Strain, ")"))
+
+# Prepare for left–right plot (mirrored bars)
+ab_plot <- ab_summary_filt %>%
+  mutate(mean_ab_plot = ifelse(individual == "Child", -mean_ab, mean_ab))
+
+# Highlight the transmitted strains
+transmitted_strains <- instrain_related_samestrain$Strain
+transmitted_ids <- transmitted_strains[transmitted_strains %in% colnames(abun_table_ra_t)]
+
+library(forcats)
+ab_plot <- ab_plot %>%
+  mutate(is_highlight = Strain %in% transmitted_ids) %>%
+  group_by(Strain_Species) %>%
+  mutate(any_highlight = any(is_highlight),
+         total_ab = sum(abs(mean_ab_plot), na.rm = TRUE)  # for ordering within blocks
+         ) %>%
+  ungroup() %>%
+  mutate(Strain_Species = fct_reorder(Strain_Species, any_highlight + total_ab / max(total_ab, na.rm = TRUE)) # Put highlighted Strain_Species first, then order by total abundance
+  )
+
+# Plot
+ggplot(ab_plot, aes(x = mean_ab_plot, y = Strain_Species, fill = individual)) +
+  geom_col(aes(alpha = is_highlight), width = 0.7) +
+  scale_alpha_manual(values = c(`FALSE` = 0.6, `TRUE` = 1), guide = "none") +
+  geom_text(aes(label = round(mean_ab, 3),
+                x = ifelse(individual == "Child", mean_ab_plot - 2, mean_ab_plot + 2)),
+            size = 3) +
+  scale_x_continuous(labels = abs) +   # show positive labels on x-axis
+  scale_fill_manual(values = c("Child" = "#E5F0DB", "Mother" = "#E1EBF6")) +
+  theme_minimal() +
+  labs(title = NULL, # "Relative Abundance of Transmitted Strains"
+       x = "Relative Abundance (%)",
+       y = "") +
+  theme(axis.text.y = element_text(face = "italic"),
+        legend.position = "bottom",
+        panel.grid.major.y = element_blank()
+        )
+
+# Remove unecessary objects
+rm(ab_long, ab_plot, ab_summary, abun_table_ra_t, abun_table_ra_1, ab_summary_filt, transmitted_ids, transmitted_strains)
+
+```
+
+# 6. Get metadata for the 208 pairs of mother and child
+```{r}
+metadata = read.delim("VG_metadata.tsv")
+pairs = read.table("Supplementary_table12.txt", header = FALSE)
+
+# Check that the classif does not differ between inclusion visit and 1wpp visit
+metadata %>%
+  group_by(VG_ID) %>%
+  filter(n_distinct(classif) > 1) %>%
+  select(VG_ID, classif) %>%
+  distinct()
+
+# Get the VG_ID for the shared pairs
+pairs <- pairs %>%
+  mutate(VG_ID = paste0("VG", str_extract(V1, "\\d{3}")))  # Extracts the 3-digit number and prepends 'VG'
+pairs = as.data.frame(pairs[,-c(1:2)])
+pairs = pairs %>%
+  dplyr::rename("VG_ID" = "pairs[, -c(1:2)]")
+
+# Add a column "Considered for analysis" to metadata. Value = Yes if the pair was one of the 208 ones used for InStrain analysis
+metadata$InStrain <- ifelse(metadata$VG_ID %in% pairs$VG_ID, "Yes", "No")
+table(metadata$InStrain) #624 Yes => divided by 3 (because 2 lines M + C for 1wpp and 1 line M for inc) = 208, so all good
+metadata_InStrain = metadata %>%
+  filter(InStrain == "Yes")
+
+# Add a transmission column to metadata_InStrain Value = Yes if there is at least 1 transmission event for that pair
+metadata_InStrain$Transmission <- ifelse(metadata_InStrain$VG_ID %in% instrain_related_samestrain$VG_ID, "Yes", "No")
+table(metadata_InStrain$Transmission) # 177 Yes => divided by 3 = 59 pairs have transmission so all good
+
+# Add a Transmission_count column to metadata_InStrain to know how many strains have been transmitted per pair
+transmission_counts_df <- instrain_related_samestrain %>%
+  group_by(VG_ID) %>%
+  dplyr::summarise(Transmission_count = n()) %>%
+  ungroup()
+metadata_InStrain <- metadata_InStrain %>%
+  left_join(transmission_counts_df, by = "VG_ID")
+metadata_InStrain$Transmission_count[is.na(metadata_InStrain$Transmission_count)] <- 0 #for those without transmission
+rm(transmission_counts_df)
+
+# plot the percentage of pairs sharing at least 1 strain
+percentage <- metadata_InStrain %>%
+  dplyr::count(Transmission) %>%
+  mutate(percentage = 100 * n / sum(n))
+
+perc = ggplot(percentage, aes(x = Transmission, y = percentage, fill = Transmission)) +
+  geom_bar(stat = "identity", width = 0.5) +
+  ylab("Percentage of related pairs") +
+  xlab("Strain transmission") +
+  ggtitle("Percentage of related pairs sharing at least one strain") +
+  scale_fill_manual(values = c("Yes" = "#1f78b4", "No" = "#33a02c")) +
+  theme_minimal()
+
+# Remove unecessary objects
+rm(perc, percentage, pairs)
+```
+
+# 7. Strain Transmission in related pairs in function of the nutritional group
+## 7.1 Frequency of shared strains in related pairs by classif
+```{r}
+# Check if the number of transmitted strain is different between the nutritional groups
+# Create a table of observed frequencies
+transmission_counts_classif <- instrain_related_samestrain %>% 
+  group_by(classif) %>%  # Group by both mother-child pair and nutritional group
+  dplyr::summarise(Sharing_events_n = n(), .groups = "drop")  # Count transmission events
+
+# Calculate the expected number of transmissions per classification group (the distribution is not equal across all groups)
+# Define proportions
+expected_proportions_df <- metadata_InStrain %>%
+  dplyr::distinct(VG_ID, classif) %>%
+  dplyr::count(classif) %>%  # Count the number of occurrences of each classif
+    mutate(proportion = n / sum(n))  # Calculate the proportion for each class
+
+transmission_counts_classif <- transmission_counts_classif %>%
+  left_join(expected_proportions_df, by = "classif") %>%
+  mutate(Expected_sharing_event_n = (sum(Sharing_events_n) * proportion))  # Total counts * expected proportion
+
+sum(transmission_counts_classif$Expected_sharing_event_n) # 131, so it's correct, it's the number of transmission events
+sum(transmission_counts_classif$proportion) # 1, so it's correct, it's 100% of the related pairs sharing at least 1 strain
+
+# Chi-square test
+chi_test_fre <- chisq.test(transmission_counts_classif$Sharing_events_n, p = transmission_counts_classif$proportion)
+print(chi_test_fre)
+p_value = chi_test_fre$p.value
+
+# Frequency of sharing events between nutritional groups
+fre_shared_strain = ggplot(instrain_related_samestrain, aes(x = classif, fill = classif)) +
+  scale_fill_manual(values = c("Normally nourished" = "darkgoldenrod1", "Overnourished" = "coral1", "Undernourished" = "palegreen")) +
+  geom_bar(color = "black", width = 0.2) +
+  theme_minimal() +
+  labs(title = "Frequency of transmitted strain in related pairs in function of nutritional groups",
+       x = "Nutritional group",
+       y = "Frequency of transmitted strain") +
+  theme(legend.position = "none") +
+  annotate("text", x = 2, y = 62,  # Set y position inside the range
+           label = paste("p =", signif(p_value, 3)), 
+           size = 5)
+
+# Frequency of sharing events between nutritional groups by species
+fre_shared_strain_all = ggplot(instrain_related_samestrain, aes(x = classif, fill = classif)) +
+  scale_fill_manual(values = c("Normally nourished" = "darkgoldenrod1", "Overnourished" = "coral1", "Undernourished" = "palegreen")) +
+  geom_bar(color = "black", width = 0.2) +
+  facet_wrap(~ Species) + #scales = "free_y"
+  theme_minimal() +
+  theme(axis.text.x = element_blank()) +
+  labs(title = "Frequency of transmitted strain in related pairs in function of nutritional groups",
+       x = "Nutritional group",
+       y = "Frequency of transmitted strain") +
+  theme(legend.position = "none")
+```
+
+## 7.2 Proportion of shared strains in related pairs by classif
+```{r}
+# Check if the proportion of related pairs having at least 1 transmitted strain is statistically different between the nutritional groups
+
+# Define the observed counts
+  # Get the unique VG_ID rows and then create a table of 'classif' for these unique VG_IDs
+  observed_counts <- instrain_related_samestrain %>%
+    dplyr::distinct(VG_ID, .keep_all = TRUE) %>%  # Keep only one row per VG_ID
+    pull(classif) %>%  # Pull the 'classif' column as a vector
+    table()  # Create a table for the unique 'classif' values
+  print(observed_counts)
+  
+  observed_counts_df = as.data.frame(observed_counts)
+  observed_counts_df = observed_counts_df %>%
+    dplyr::rename("classif" = ".")
+
+observed_counts_df = observed_counts_df %>%
+  mutate(Prop = observed_counts_df$Freq*100/expected_proportions_df$n)
+
+# Perform the Chi-square test
+chi_test <- chisq.test(observed_counts, p = expected_proportions_df$proportion)
+print(chi_test)
+p_value = chi_test$p.value
+
+print(expected_proportions_df$n)
+print(observed_counts)
+
+# Perform pairwise proportions test
+# Make sure the vectors are named
+x <- observed_counts_df$Freq
+n <- expected_proportions_df$n
+names(x) <- observed_counts_df$classif
+names(n) <- observed_counts_df$classif
+
+pairwise_test_result <- pairwise.prop.test(x = x,  # Number of transmitted strains (successes)
+                                           n = n,  # Total number of pairs
+                                           p.adjust.method = "bonferroni"
+                                           )
+print(pairwise_test_result)
+
+# Convert the matrix of p-values into a tidy format
+pairwise_res_df <- as.data.frame(pairwise_test_result$p.value)  
+
+pval_df <- pairwise_res_df %>%
+  mutate(group1 = rownames(pairwise_res_df)) %>%
+  pivot_longer(-group1, names_to = "group2", values_to = "p") %>%
+  filter(!is.na(p))   # keep only real comparisons
+
+# make it compatible with stat_pvalue_manual for the graph below
+pval_df <- pval_df %>%
+  mutate(y.position = seq(max(observed_counts_df$Prop)*1.05,
+                          length.out = n(),
+                          by = max(observed_counts_df$Prop)*0.1)) %>%
+  mutate(p_label = sprintf("%.3f", p))  
+
+# Proportion of shared events in function of nutritional group
+pal_muac = c("Normally nourished" = "#f7bf83",
+             "Overnourished" = "#83f7bf",
+             "Undernourished" = "#f78583")
+
+prop_shared_strain = ggplot(observed_counts_df, aes(x = classif, y = Prop, fill = classif)) +
+  geom_col(color = "black", width = 0.3) +
+  scale_fill_manual(values = c(pal_muac)) +
+  scale_x_discrete(labels = c("Normally nourished" = "NN",
+                              "Overnourished"      = "ON",
+                              "Undernourished"     = "UN")) +
+  theme_minimal() +
+  labs(x = "Nutritional status",
+       y = "Percentage of pairs sharing at least one strain") +
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 12)) +
+  stat_pvalue_manual(pval_df,
+                     label = "p_label",   # show p-values labels
+                     tip.length = 0.01,   # length of bracket lines
+                     size = 4             # text size
+                     )
+```
+
+## 7.3 Remove unnecessary objects
+```{r}
+rm(observed_counts, transmission_counts_classif, expected_proportions_df, chi_test_fre, fre_shared_strain, fre_shared_strain_all, observed_counts_df, prop_shared_strain, chi_test, p_value, x, n, pval_df, pairwise_res_df, pal_muac, pairwise_test_result)
+```
+
+## 7.4 Top 5 transmitted species per nutritional group
+```{r}
+# Normally nourished
+  top5_shared_normo = instrain_related_samestrain %>%
+    filter(classif == "Normally nourished") %>%
+    dplyr::count(Species, sort = TRUE) %>%  # Count occurrences and sort in descending order
+    top_n(5, n) # Select the top 5 species
+  
+  top5_normo = ggplot(top5_shared_normo, aes(x = fct_reorder(Species, n, .desc = TRUE), y = n)) +
+    geom_bar(stat = "identity", fill = "darkgoldenrod1", width = 0.2) +
+    theme_minimal() + 
+    labs(title = "Top 5 transmitted species in normally nourished pairs",
+         x = "Species",
+         y = "Transmission events") +
+    theme(axis.text.x = element_text(face="italic"))  # angle = 45, hjust = 1,  Rotates x-axis labels
+
+# Overnourished
+  top5_shared_over = instrain_related_samestrain %>%
+    filter(classif == "Overnourished") %>%
+    dplyr::count(Species, sort = TRUE) %>%  # Count occurrences and sort in descending order
+    top_n(5, n) # Select the top 5 species
+  
+  top5_over = ggplot(top5_shared_over, aes(x = fct_reorder(Species, n, .desc = TRUE), y = n)) +
+    geom_bar(stat = "identity", fill = "coral1", width = 0.2) +
+    theme_minimal() + 
+    labs(title = "Top 5 transmitted species in overnourished pairs",
+         x = "Species",
+         y = "Transmission events") +
+    theme(axis.text.x = element_text(face="italic"))  # angle = 45, hjust = 1,  Rotates x-axis labels
+
+# Undernourished
+  top5_shared_under = instrain_related_samestrain %>%
+    filter(classif == "Undernourished") %>%
+    dplyr::count(Species, sort = TRUE) %>%  # Count occurrences and sort in descending order
+    top_n(5, n) # Select the top 5 species
+  
+  top5_under = ggplot(top5_shared_under, aes(x = fct_reorder(Species, n, .desc = TRUE), y = n)) +
+    geom_bar(stat = "identity", fill = "palegreen", width = 0.2) +
+    theme_minimal() + 
+    labs(title = "Top 5 transmitted species in undernourished pairs",
+         x = "Species",
+         y = "Transmission events") +
+    theme(axis.text.x = element_text(face="italic"))  # angle = 45, hjust = 1,  Rotates x-axis labels
+ 
+rm(top5_shared_normo, top5_normo, top5_shared_over, top5_over, top5_shared_under, top5_under)
+```
+
+## 7.5 Transmitted strains unique to one nutritional group
+```{r}
+# Separate into the 3 nutritional groups
+instrain_related_samestrain_NN = instrain_related_samestrain %>%
+  filter(classif == "Normally nourished")
+n_distinct(instrain_related_samestrain_NN$Species, na.rm = TRUE)
+
+instrain_related_samestrain_ON = instrain_related_samestrain %>%
+  filter(classif == "Overnourished")
+n_distinct(instrain_related_samestrain_ON$Species, na.rm = TRUE)
+
+instrain_related_samestrain_UN = instrain_related_samestrain %>%
+  filter(classif == "Undernourished")
+n_distinct(instrain_related_samestrain_UN$Species, na.rm = TRUE)
+
+
+# Filter for unique strains in each dataset
+instrain_related_samestrain_NN_u = instrain_related_samestrain_NN %>%
+  distinct(Species, .keep_all = TRUE)
+
+instrain_related_samestrain_ON_u = instrain_related_samestrain_ON %>%
+  distinct(Species, .keep_all = TRUE)
+
+instrain_related_samestrain_UN_u = instrain_related_samestrain_UN %>%
+  distinct(Species, .keep_all = TRUE)
+
+# Regroup in a single dataset
+unique_species_byclassif = bind_rows(instrain_related_samestrain_NN_u,
+                                     instrain_related_samestrain_ON_u,
+                                     instrain_related_samestrain_UN_u) %>%
+  select(classif, Species, Genus) %>%
+  mutate(Species = ifelse(is.na(Species) | Species == "", Genus, Species)  # replace empty/NA Species with Genus
+  ) %>%
+  select(classif, Species)
+
+# Prepare the data
+species_by_classif <- unique_species_byclassif %>%
+  mutate(present = 1) %>%
+  tidyr::pivot_wider(names_from = classif, values_from = present, values_fill = 0)
+
+# Create a list of species per classif
+lt <- unique_species_byclassif %>%
+  group_by(classif) %>%
+  summarise(Species = list(Species)) %>%
+  deframe()
+lt_clean <- lapply(lt, function(x) x[!is.na(x)])
+
+
+# Convert list of sets into a combination matrix
+matrix <- make_comb_mat(lt_clean, mode = "distinct")
+
+# UpSet plot
+svglite("Upset - unique species classif.svg", width = 7, height = 5)
+UpSet(matrix,
+      pt_size = unit(5, "mm"),
+      set_order = names(lt),               
+      comb_order = order(comb_size(matrix)) 
+)
+dev.off()
+
+# Common between the 3 groups
+shared_species_all <- species_by_classif %>%
+  filter(`Overnourished` == 1 & `Undernourished` == 1 & `Normally nourished` == 1) %>%
+  pull(Species)
+shared_species_all
+
+table(instrain_related_samestrain$Species[instrain_related_samestrain$Species %in% shared_species_all])
+
+# Common between Overnourished and Undernourished
+shared_species_ON_UN <- species_by_classif %>%
+  filter(`Overnourished` == 1 & `Undernourished` == 1 & `Normally nourished` == 0) %>%
+  pull(Species)
+shared_species_ON_UN
+
+# Common between Overnourished and Normally nourished nourished
+shared_species_ON_NN <- species_by_classif %>%
+  filter(`Overnourished` == 1 & `Undernourished` == 0 & `Normally nourished` == 1) %>%
+  pull(Species)
+shared_species_ON_NN
+
+# Common between Undernourished and Normally nourished nourished
+shared_species_UN_NN <- species_by_classif %>%
+  filter(`Overnourished` == 0 & `Undernourished` == 1 & `Normally nourished` == 1) %>%
+  pull(Species)
+shared_species_UN_NN
+
+# Only Undernourished
+shared_species_UN <- species_by_classif %>%
+  filter(`Overnourished` == 0 & `Undernourished` == 1 & `Normally nourished` == 0) %>%
+  pull(Species)
+shared_species_UN
+
+# Only Overnourished
+shared_species_ON <- species_by_classif %>%
+  filter(`Overnourished` == 1 & `Undernourished` == 0 & `Normally nourished` == 0) %>%
+  pull(Species)
+shared_species_ON
+
+# Only Normally nourished
+shared_species_NN <- species_by_classif %>%
+  filter(`Overnourished` == 0 & `Undernourished` == 0 & `Normally nourished` == 1) %>%
+  pull(Species)
+shared_species_NN
+
+# Remove unnecessary objects
+rm(instrain_related_samestrain_NN, instrain_related_samestrain_ON, instrain_related_samestrain_UN, instrain_related_samestrain_NN_u, instrain_related_samestrain_ON_u, instrain_related_samestrain_UN_u, unique_species_byclassif, upset_plot, lt, lt_clean, matrix, species_by_classif, shared_species_all, shared_species_ON_UN, shared_species_ON_NN, shared_species_UN_NN, shared_species_UN, shared_species_ON, shared_species_NN)
+```
+
+## 7.6 Correlation between strain abundance and the transmission
+```{r}
+# Get the number of transmission events per strain
+instrain_related_samestrain <- instrain_related_samestrain %>%
+  group_by(Strain) %>%                 # Group by Strain
+  dplyr::mutate(Transmission_Count_st = n()) %>%   # Count occurrences and add as new column
+  ungroup()
+
+transmission_data <- instrain_related_samestrain %>%
+  distinct(Strain, .keep_all = TRUE) %>%  # Keep only one row per SGB
+  select(Strain, Species, Strain_Species, Transmission_Count_st)  # Select relevant columns
+
+transmission_data <- transmission_data %>% 
+  filter(!is.na(Strain)) # Remove all the non taxonomically assigned transmission events
+
+# Compute the average abundance per species
+avg_abun_mother <- abun_table_ra %>%
+  select(1:8, starts_with("MPST")) # Take the first 8 variables + only the mothers
+
+avg_abun_mother = avg_abun_mother %>%
+  rowwise() %>%  # Treat each row separately
+  dplyr::mutate(Average_Abundance = mean(c_across(9:ncol(avg_abun_mother)), na.rm = TRUE)) %>%  # Calculate mean across abundance columns
+  ungroup() %>% 
+  select(Species, SGB, Average_Abundance)  # Keep taxonomy columns + new average column
+
+# Merge the datasets 
+merged_data = left_join(transmission_data, avg_abun_mother, by = c("Strain" = "SGB"))
+merged_data = merged_data %>%
+  select(-Species.y) %>%
+  rename("Species" = "Species.x")
+
+# Correlation test between transmission and abundance
+correlation_test <- cor.test(merged_data$Transmission_Count_st, merged_data$Average_Abundance, method = "spearman")
+print(correlation_test)
+p_value = correlation_test$p.value
+rho = 0.4435366
+
+corr = ggplot(merged_data, aes(x = Average_Abundance, y = Transmission_Count_st)) +
+  geom_point(color = "black", size = 1) +
+  geom_smooth(method = "lm", color = "red", se = FALSE) + 
+  labs(title = NULL, # "Correlation between transmission events and relative abundance in maternal samples"
+       x = "Mean relative abundance in maternal samples",
+       y = "Transmission events") +
+  theme_minimal() +
+  theme(axis.title.x = element_text(size = 16),
+        axis.text.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.y = element_text(size = 16)) +
+ annotate("text", x = 6, y = 10,
+           label = paste("p-value =", signif(p_value, 3), "\nρ =", signif(rho, 3)), 
+           size = 6, color = "red")
+
+# Try removing the outlier Segatella copri SGB1626
+merged_data_sc <- merged_data %>% 
+  filter(Strain != "SGB1626")
+
+correlation_test_sc <- cor.test(merged_data_sc$Transmission_Count_st, merged_data_sc$Average_Abundance, method = "spearman")
+print(correlation_test_sc)
+p_value_sc = correlation_test_sc$p.value # 0.01
+rho_sc = 0.4365495
+
+corr_sc = ggplot(merged_data_sc, aes(x = Average_Abundance, y = Transmission_Count_st)) +
+  geom_point(color = "black", size = 1) +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +  
+  labs(title = NULL, #"Correlation between transmission events and relative abundance in maternal samples"
+       x = "Mean relative abundance in maternal samples",
+       y = "Transmission events") +
+  theme_minimal() +
+  theme(axis.title.x = element_text(size = 16),
+        axis.text.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.y = element_text(size = 16)) +
+ annotate("text", x = 1.3, y = 15,
+           label = paste("p-value =", signif(p_value_sc, 3), "\nρ =", signif(rho_sc, 3)), 
+           size = 6, color = "red")
+```
+
+## 7.7 Remove unecessary objects
+```{r}
+rm(avg_abun_mother, correlation_test, correlation_test_sc, merged_data, merged_data_sc, transmission_data, corr, corr_sc, p_value, p_value_sc, rho, rho_sc)
+```
+
+
+# 8. Effect of explanatory variables on transmission
+```{r}
+# Group variables
+general = c("start", "end", "dateinterview", "deviceid", "start-geopoint", "Interv_name", "labtech_name", "pidate")
+participant = c("vdate", "firstname", "lastname", "i1", "s19", "vih", "s20", "age")
+pregnancy = c("lastmenses", "weeksamen", "weekpregn", "expecteddob")
+demographic = c("district", "district_cat", "age")
+
+mother_health = c("mean_muacm", "mean_weightm", "mean_heightm", "srppw", "srpph", "bmi", "Syst_mean", "Dias_mean", "Bpm_mean", "s32", "tc", "hdl", "trg", "ldl", "glu", "wc", "ac", "qs", "tsk", "sss", "sas", "as", "ps", "ts", "ms")
+mother_symptoms = c("s34", "s35", "s36", "s37", "s38", "s39", "s40", "s41", "s48", "s49", "s50", "s51", "s52", "s53", "s53a")
+mother_nutrition = c("ddsm", "lddm")
+
+water = c("s91", "s93_sum", "s91c", "s93c_sum", "s80", "s80c", "s94", "s94sc", "s94a", "s91br", "s82")
+animals = c("s83", "s84", "s85", "s86", "s87", "s88", "s89", "s90", "s90c")
+
+birth = c("twin", "howborn", "howborn_combined", "whereborn", "estweek", "estweek_cat")
+child_health = c("mean_heightc", "mean_muacc", "mean_weightc", "mean_hcc", "tsf", "sssf", "quad", "flank")
+child_symptoms = c("ch2", "ch3", "ch4", "ch5", "ch6", "ch7", "ch8", "ch9", "ch10", "s34c", "s35c", "s36c", "s38c", "s39c", "s40c", "s41c")
+breastfeeding = c("bf1", "bf2", "bf4", "bf5", "bf6", "bf7", "bf8", "bf10", "bf11", "bf12", "bf13", "bf16", "bf19", "bf21")
+```
+
+## 8.1 Effect of antibiotics use on strain transmission
+```{r}
+# Test whether antibiotics consumption alter the transmission or not
+reduced_metadata = metadata_InStrain %>%
+  filter(Visit == "W1") %>%
+  filter(individual == "Mother")
+
+chi_test <- chisq.test(x = reduced_metadata$ATB_med_M, y = reduced_metadata$Transmission)
+print(chi_test)
+p_value = chi_test$p.value
+
+# Summarize the data to get percentages to plot
+plot_data <- reduced_metadata %>%
+  group_by(ATB_med_M, Transmission) %>%
+  dplyr::summarise(Count = n(), .groups = "drop") %>%
+  mutate(Proportion = Count / sum(Count) * 100,
+         Label = paste0(Count, " (", round(Proportion, 1), "%)"))
+
+# Total summary
+total_N <- nrow(reduced_metadata)
+total_trans <- sum(reduced_metadata$Transmission == "Yes")
+total_trans_pct <- round(total_trans / total_N * 100, 1)
+
+atb = ggplot(plot_data, aes(x = ATB_med_M, y = Count, fill = Transmission)) +
+  geom_bar(stat = "identity", width = 0.5) +
+  geom_text(aes(label = Label),
+            position = position_stack(vjust = 0.5),
+            color = "black", size = 3) +
+  scale_fill_manual(values = c("Yes" = "#a7d3f0", "No" = "#f0c4a7")) +
+  labs(x = "Maternal antibiotic exposure",
+       y = "Number of dyads",
+       fill = "Transmission of strain") +
+  annotate("text", x = 1.5, y = 162,
+           label = paste0("Chi-sq p-value = ", signif(p_value, 3)),
+           size = 4, fontface = "italic") + 
+  annotate("text", x = 1.5, y = 155,
+           label = paste0("Total N = ", total_N,
+                          " | Transmitting dyads = ", total_trans,
+                          " (", total_trans_pct, "%)"),
+           size = 3.5, hjust = 0.5) +
+  theme_minimal(base_size = 14) +
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom")
+
+# Remove unnecessary objects
+rm(plot_data, chi_test, p_value, atb, total_N, total_trans, total_trans_pct)
+```
+
+## 8.2 Effect of maternal variables on strain transmission
+```{r}
+# Pregnancy variables
+mother_health_gt = metadata_InStrain %>%
+  filter(individual == "Mother") %>%
+  filter(Visit == "Inc") %>%
+    gtsummary::tbl_summary(include = c(all_of(mother_health)), 
+    by = "Transmission", 
+    missing_text = "NA",
+    missing = "no",
+    statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+    ) %>%
+      add_overall(last = TRUE) %>%
+      add_p() %>%
+      bold_labels()
+
+demographic_gt = metadata_InStrain %>%
+  filter(individual == "Mother") %>%
+  filter(Visit == "Inc") %>%
+    gtsummary::tbl_summary(include = c(all_of(demographic)), 
+    by = "Transmission", 
+    missing_text = "NA",
+    missing = "no",
+    statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+    ) %>%
+      add_overall(last = TRUE) %>%
+      add_p() %>%
+      bold_labels()
+
+mother_nutrition_gt = metadata_InStrain %>%
+  filter(individual == "Mother") %>%
+  filter(Visit == "Inc") %>%
+    gtsummary::tbl_summary(include = c(all_of(mother_nutrition)), 
+    by = "Transmission", 
+    missing_text = "NA",
+    missing = "no",
+    statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+    ) %>%
+      add_overall(last = TRUE) %>%
+      add_p() %>%
+      bold_labels()
+
+# 1wpp variables
+birth_gt = metadata_InStrain %>%
+  filter(individual == "Child") %>%
+    gtsummary::tbl_summary(include = c(all_of(birth)), 
+    by = "Transmission", 
+    missing_text = "NA",
+    missing = "no",
+    statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+    ) %>%
+      add_overall(last = TRUE) %>%
+      add_p() %>%
+      bold_labels()
+
+water_gt = metadata_InStrain %>%
+  filter(individual == "Mother") %>% #they have the same infos on the children and mother rows, so I chose just one
+  filter(Visit == "W1") %>%
+    gtsummary::tbl_summary(include = c(all_of(water)), 
+    by = "Transmission", 
+    missing_text = "NA",
+    missing = "no",
+    type = all_dichotomous()~"categorical",
+    statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+    ) %>%
+      add_overall(last = TRUE) %>%
+      add_p() %>%
+      bold_labels()
+
+mother_health_1w_gt = metadata_InStrain %>%
+  filter(individual == "Mother") %>%
+  filter(Visit == "W1") %>%
+    gtsummary::tbl_summary(include = c(all_of(mother_health)), 
+    by = "Transmission", 
+    missing_text = "NA",
+    missing = "no",
+    statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+    ) %>%
+      add_overall(last = TRUE) %>%
+      add_p() %>%
+      bold_labels()
+
+# Other 1wpp variables
+mother_nutrition_1w_gt = metadata_InStrain %>%
+  filter(individual == "Mother") %>%
+  filter(Visit == "W1") %>%
+    gtsummary::tbl_summary(include = c(all_of(mother_nutrition)), 
+    by = "Transmission", 
+    missing_text = "NA",
+    missing = "no",
+    statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+    ) %>%
+      add_overall(last = TRUE) %>%
+      add_p() %>%
+      bold_labels()
+
+animals_gt = metadata_InStrain %>%
+  filter(individual == "Mother") %>%
+  filter(Visit == "W1") %>%
+    gtsummary::tbl_summary(include = c(all_of(animals)), 
+    by = "Transmission", 
+    missing_text = "NA",
+    missing = "no",
+    statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+    ) %>%
+      add_overall(last = TRUE) %>%
+      add_p() %>%
+      bold_labels()
+```
+
+## 8.3 Effect of mode of delivery on transmission
+```{r}
+# Create the plot for frequency of transmission by mode of delivery
+table(reduced_metadata$howborn, reduced_metadata$Transmission) #all transmission events occur in vaginally born babies (no c-section)
+
+counts <- reduced_metadata %>% 
+  dplyr::count(howborn_combined)
+
+stat.test <- reduced_metadata %>%
+  pairwise_wilcox_test(Transmission_count ~ howborn_combined
+                       p.adjust.method = "BH"
+                       ) %>%
+  add_y_position() %>%
+  mutate(pval_label = paste0("p-value = ", signif(p.adj, 3), " ", p.adj.signif))
+  
+
+mod_plot <- ggplot(reduced_metadata, aes(x = howborn_combined, y = Transmission_count)) +
+  geom_violin(fill = "gray80", color = NA, trim = FALSE) +  # violin plot
+  geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +  # boxplot overlay
+  geom_jitter(width = 0.15, alpha = 0.6, color = "black") +  # jittered points
+  scale_x_discrete(labels = paste0(counts$howborn_combined, " (n=", counts$n, ")")) +
+  labs(x = "Delivery mode", y = "Number of strains transmitted per dyad") +
+  theme_classic() +
+  theme(axis.text.x = element_text(size = 12),
+        axis.title = element_text(size = 10),
+        axis.title.x = element_blank()
+        ) +
+  stat_pvalue_manual(stat.test, label = "pval_label", tip.length = 0.01, step.increase = 0.05) 
+
+rm(counts, stat.test, mod_plot)
+```
+
+## 8.4 Effect of MUAC group on transmission
+```{r}
+# Mean number of transmitted strains per dyad by maternal nutritional status 
+# Count number of dyads per nutritional category
+counts_classif <- reduced_metadata %>%
+  group_by(classif) %>%
+  dplyr::summarise(n = n(), .groups = "drop")
+
+# Turn into named vector for scale_x_discrete labels
+x_labels <- paste0(counts_classif$classif, " (n=", counts_classif$n, ")")
+names(x_labels) <- counts_classif$classif
+
+
+muac_plot = ggplot(reduced_metadata, aes(x = classif, y = Transmission_count)) +
+    geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +  # boxplot overlay
+    geom_jitter(width = 0.15, alpha = 0.6, color = "black") +  # jittered points
+    scale_x_discrete(labels = x_labels) +
+    labs(x = "Maternal nutritionnal status", y = "Number of strains transmitted per dyad") +
+    theme_classic() +
+    theme(axis.text.x = element_text(size = 10),
+          axis.title.y = element_text(size = 10),
+          axis.title.x = element_blank()
+          ) +
+  stat_compare_means(method = "wilcox.test",
+                     comparisons = list(c("Undernourished", "Normally nourished"),
+                                        c("Normally nourished", "Overnourished"),
+                                        c("Undernourished", "Overnourished")),
+                     p.adjust.methods = "BH",
+                     label = "p",
+                     size = 4)
+```
+
+# 9. Correlation between number of strains per species and transmission rate
+```{r}
+# Total strains per species
+total_strains <- abun_table_ra %>%
+  dplyr::distinct(Species, SGB) %>%
+  dplyr::count(Species, name = "n_total_strains")
+
+# Transmitted strains per species
+trans_strains <- instrain_related_samestrain %>%
+  dplyr::distinct(Species, Strain) %>%
+  dplyr::count(Species, name = "n_transmitted_strains")
+
+# Combine
+species_df <- total_strains %>%
+  left_join(trans_strains, by = "Species") %>%
+  mutate(n_transmitted_strains = replace_na(n_transmitted_strains, 0),
+         transmitted = n_transmitted_strains > 0
+         )
+
+# logistic regression: Are species with more strains more likely to be transmitted at least once?
+model <- glm(transmitted ~ n_total_strains,
+             data = species_df,
+             family = binomial)
+
+summary(model)
+
+# predicted probabilities
+predict(model,
+        newdata = data.frame(n_total_strains = c(1, 3, 5, 10)),
+        type = "response")
+
+library(broom)
+
+stats_lab <- tidy(model, conf.int = TRUE, exponentiate = TRUE) %>%
+  filter(term == "n_total_strains") %>%
+  mutate(
+    label = paste0(
+      "OR = ", round(estimate, 2),
+      " (95% CI ", round(conf.low, 2), "–", round(conf.high, 2), ")\n",
+      "p = ", signif(p.value, 2)
+    )
+  )
+
+ggplot(species_df,
+       aes(x = n_total_strains, y = transmitted)) +
+  geom_jitter(height = 0.05, width = 0, alpha = 0.6) +
+  geom_smooth(method = "glm",
+              method.args = list(family = "binomial"),
+              se = TRUE) +
+  annotate("text",
+           x = 4, y = 2.3,
+           label = stats_lab$label,
+           size = 3) +
+  labs(x = "Number of strains per species",
+       y = "Species transmitted (yes/no)") +
+  theme_bw()
+```

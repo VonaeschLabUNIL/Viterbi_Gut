@@ -1,0 +1,3580 @@
+---
+title: "Published_code"
+author: "Margaux Crézé"
+date: "2026-07-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Packages
+```{r}
+  library(ComplexHeatmap)  
+  library(dplyr)
+  library(ggpubr)
+  library(ggplot2)
+  library(ggrepel)
+  library(gridExtra)
+  library(gtable)
+  library(gtsummary)
+  library(MicEco)
+  library(phyloseq)
+  library(plyr)
+  library(RColorBrewer)
+  library(readxl)
+  library(scales)
+  library(stringr)
+  library(svglite)
+  library(tidyr)
+  library(tidyverse)
+  library(vegan)
+  library(colorRamp2)
+  library(viridis)
+  library(NbClust) #for clustering
+  library(ape)
+  library(glue)
+  library(microbiome)
+  library(ggrepel)
+  library(patchwork)
+```
+
+
+# 2. Import metadata
+```{r}
+metadata_df = read.delim("VG_metadata.tsv")
+bm_followup <- read_excel("Supplementary_table1.xlsx") #Needed in point 9.5 - Epidemiology description
+m12weight <- read_excel("Supplementary_table2.xlsx") #Needed in point 9.6 - Epidemiology description
+```
+
+# 3. Group variables
+```{r}
+general = c("start", "end", "dateinterview", "deviceid", "start-geopoint", "Interv_name", "labtech_name", "pidate")
+participant = c("vdate", "firstname", "lastname", "i1", "s19", "vih", "s20", "age")
+pregnancy = c("lastmenses", "weeksamen", "weekpregn", "expecteddob")
+demographic = c("district", "age", "mean_muacm")
+
+mother_health = c("mean_muacm", "mean_weightm", "mean_heightm", "srppw", "srpph", "bmi", "m1", "m3", "m3_1", "m4a", "m4b", "m5", "m6a", "m6b", "m6_1", "m7", "m6a3", "m6b3", "m6_13", "m73", "s32", "tc", "hdl", "trg", "ldl", "glu", "wc", "ac", "qs", "tsk", "sss", "sas", "as", "ps", "ts", "ms")
+mother_symptoms = c("s34", "s35", "s36", "s37", "s38", "s39", "s40", "s41", "s48", "s49", "s50", "s51", "s52", "s53", "s53a")
+mother_medication = c()
+mother_nutrition_ever = c("s95",	"s96",	"s97",	"s98",	"s99",	"s100",	"s101",	"s102",	"s103",	"s104",	"s105",	"s106",	"s107",	"s108",	"s109",	"s110",	"s111",	"s112",	"s113",	"s114",	"s115",	"s116",	"s117",	"s118",	"s119",	"s120",	"s121",	"s122",	"s123",	"s124",	"s125",	"s126",	"s127",	"s128",	"s129",	"s130",	"s131",	"s132",	"s133",	"s134",	"s135",	"s136")
+mother_nutrition_24h = c("s137",	"s138",	"s139",	"s140",	"s141",	"s142",	"s143",	"s144",	"s145",	"s146",	"s147",	"s148",	"s149",	"s150",	"s151",	"s152",	"s153",	"s154",	"s155",	"s156",	"s157",	"s158",	"s159",	"s160",	"s161",	"s162",	"s163",	"s164",	"s165",	"s166",	"s167",	"s168",	"s169",	"s170",	"s171",	"s172",	"s173",	"s174",	"s175",	"s176",	"s177",	"s178")
+mother_nutrition_freq = c("s179",	"s180",	"s181",	"s182",	"s183",	"s184",	"s185",	"s186",	"s187",	"s188",	"s189",	"s190",	"s191",	"s192",	"s193",	"s194",	"s195",	"s196",	"s197",	"s198",	"s199",	"s200",	"s201",	"s202",	"s203",	"s204",	"s205",	"s206",	"s207",	"s208",	"s209",	"s210",	"s211",	"s212",	"s213",	"s214",	"s215",	"s216",	"s217",	"s218",	"s219",	"s220")
+mother_samples = c()
+
+water = c("s79", "s80", "s80c", "s82", "s91", "s91c", "s93", "s93c", "s94", "s94sc", "s94a", "s91br")
+animals = c("s83", "s84", "s85", "s86", "s87", "s88", "s89", "s90", "s90c")
+
+birth = c("twin", "howborn", "whereborn", "estweek")
+child_health = c("mean_heightc", "mean_muacc", "mean_weightc", "mean_hcc", "tsf", "sssf", "quad", "flank")
+child_symptoms = c("ch2", "ch3", "ch4", "ch5", "ch6", "ch7", "ch8", "ch9", "ch10", "s34c", "s35c", "s36c", "s38c", "s39c", "s40c", "s41c")
+breastfeeding = c("bf1", "bf2", "bf4", "bf5", "bf6", "bf7", "bf8", "bf10", "bf11", "bf12", "bf13", "bf16", "bf19", "bf21")
+
+```
+
+# 4. Import shotgun metagenomic data and create phyloseq object - with MetaPhlan
+```{r}
+tax_table_ra <- read.delim("Supplementary_table3.txt", skip = 1)
+
+tax_table_M_abs <- read.delim("Supplementary_table4.txt")
+tax_table_C_abs <- read.delim("Supplementary_table5.txt")
+
+tax_table_M_abs = tax_table_M_abs[, -2] #remove clade id
+tax_table_C_abs = tax_table_C_abs[, -2] #remove clade id
+
+tax_table_abs <- full_join(tax_table_M_abs, tax_table_C_abs, by = "clade_name") #Join both mother and child table
+tax_table_abs[is.na(tax_table_abs)] <- 0
+
+# Erase data frames and vectors that are not necessary anymore
+  rm("tax_table_M_abs", "tax_table_C_abs")
+```
+
+## 4.1 Relative abundance
+```{r}
+# Create a taxonomy table - relative abundances
+  # Obtain a table with only the tax names
+  tax_names_ra <- str_split_fixed(tax_table_ra$clade_name, "\\|[p,c,o,f,g,s,t]__", 8)
+  tax_names_ra <- as.data.frame(tax_names_ra)
+  tax_names_ra[,1] <- str_remove(tax_names_ra[,1], "k__")
+  # Keeping only the rows with the complete taxonomy
+  tax_names_ra <- tax_names_ra[-(which(tax_names_ra[,8] == "")),]
+  # Changing colnames
+  colnames(tax_names_ra) <- c("Kingdom", "Phylum", "Class","Order","Family","Genus","Species", "SGB")
+  # Adding the rownames
+  tax_names_ra <- tax_names_ra %>%
+    mutate(ASV = paste("SGB", seq(1:nrow(tax_names_ra)), sep=""))
+  rownames(tax_names_ra) <- tax_names_ra$ASV
+  asv_num <- tax_names_ra$ASV
+  tax_names_ra <- tax_names_ra[,-9]
+  tax_names_ra <- as.matrix(tax_names_ra) #We have now a taxonomy table, similar than the one obtain with DADA2
+  # Set as tax table phyloseq object
+  taxonomy_table_ra <- tax_table(tax_names_ra)
+
+
+# Abundance table - relative abundances
+  abun_table_ra <- cbind(str_split_fixed(tax_table_ra$clade_name, "\\|[p,c,o,f,g,s,t]__", 8),tax_table_ra)
+  abun_table_ra <- as.data.frame(abun_table_ra)
+  abun_table_ra[,1] <- str_remove(abun_table_ra[,1], "k__")
+  abun_table_ra <- abun_table_ra[-(which(abun_table_ra[,8] == "")),] 
+  rownames(abun_table_ra) <- asv_num
+  abun_table_ra <- abun_table_ra[,-c(1:9)]
+  # We have now a table with the column being each sample
+  # The row are the ASV assigned to a bacteria in the taxonomy table
+  
+  # Clear the column name
+  colnames(abun_table_ra) <- str_remove(colnames(abun_table_ra), "_metaphlan")
+  # Extract columns names to add as metadata later
+  column_names <- data.frame(ColumnNames = colnames(abun_table_ra))
+  colnames(abun_table_ra) <- str_remove(colnames(abun_table_ra), "r") #That was useful for sequencing to know which tube to use, it stood for "redone" when there was not enough DNA. We can remove it now
+  colnames(abun_table_ra) <- str_remove(colnames(abun_table_ra), "t") #That was useful for sequencing to know which tube to use, it stood for "topup" when there was not enough DNA. We can remove it now
+  
+  # Set as otu_table phyloseq object
+  abun_table_ra <- as.matrix(abun_table_ra)
+  class(abun_table_ra) <- "numeric"
+  abundance_table_ra = otu_table(abun_table_ra, taxa_are_rows = TRUE)
+
+# We have now a tax table and an otu table, we can create our phyloseq
+  physeq_ra <- phyloseq(taxonomy_table_ra, abundance_table_ra)
+  get_taxa_unique(physeq_ra, "Kingdom")
+
+# Add metadata to phyloseq object
+  rownames(metadata_df) <- metadata_df$NovogeneID
+  metadata = sample_data(metadata_df)
+  
+  physeq_ra <- merge_phyloseq(physeq_ra, metadata)
+  head(sample_data(physeq_ra))
+  
+# Create a dataframe with the abundance of each bacteria in the samples and the taxonomy
+  abun_table_ra_df <- as.data.frame(abun_table_ra) %>%
+      mutate(rows = rownames(.)) %>% 
+        left_join(as.data.frame(tax_names_ra) %>% mutate(rows = rownames(.)), by = "rows") %>%
+          dplyr::select(-rows)
+  
+# Phyloseq object description
+  physeq_ra # 2445 taxa
+  
+# Add SequencingID to metadata
+  # Add a new column 'NovogeneID' based on 'ColumnNames', removing 'r' or 't' at the end
+  column_names$NovogeneID <- ifelse(
+    grepl("[rt]$", column_names$ColumnNames),  # Check if 'ColumnNames' ends with 'r' or 't'
+    sub("[rt]$", "", column_names$ColumnNames), # Remove the trailing 'r' or 't' if it exists
+    column_names$ColumnNames                    # Otherwise, keep the original value
+  )
+
+# Erase data frames and vectors that are not necessary anymore
+  rm("column_names", "today_date", "output_path", "tax_names_ra", "abun_table_ra", "asv_num", "tax_table_ra")
+```
+
+## 4.2 Reads number (~ Absolute abundances)
+```{r}
+# Create a taxonomy table - reads number (absolute abundances)
+  # Obtain a table with only the tax names
+  tax_names_abs <- str_split_fixed(tax_table_abs$clade_name, "\\|[p,c,o,f,g,s,t]__", 8)
+  tax_names_abs <- as.data.frame(tax_names_abs)
+  tax_names_abs[,1] <- str_remove(tax_names_abs[,1], "k__")
+  # Keeping only the rows with the complete taxonomy
+  tax_names_abs <- tax_names_abs[-(which(tax_names_abs[,8] == "")),]
+  # Changing colnames
+  colnames(tax_names_abs) <- c("Kingdom", "Phylum", "Class","Order","Family","Genus","Species", "SGB")
+  # Adding the rownames
+  tax_names_abs <- tax_names_abs %>%
+    mutate(ASV_abs = paste("SGB", seq(1:nrow(tax_names_abs)), sep=""))
+  rownames(tax_names_abs) <- tax_names_abs$ASV_abs
+  asv_num_abs <- tax_names_abs$ASV_abs
+  tax_names_abs_df = tax_names_abs #this is created for later use with the clustering and heatmap
+  tax_names_abs <- tax_names_abs[,-9]
+  tax_names_abs <- as.matrix(tax_names_abs) #We have now a taxonomy table, similar than the one obtain with DADA2
+  # Set as tax table phyloseq object
+  taxonomy_table_abs <- tax_table(tax_names_abs)
+  
+# Abundance table - relative abundances
+  abun_table_abs <- cbind(str_split_fixed(tax_table_abs$clade_name, "\\|[p,c,o,f,g,s,t]__", 8),tax_table_abs)
+  abun_table_abs <- as.data.frame(abun_table_abs)
+  abun_table_abs[,1] <- str_remove(abun_table_abs[,1], "k__")
+  abun_table_abs <- abun_table_abs[-(which(abun_table_abs[,8] == "")),] 
+  rownames(abun_table_abs) <- asv_num_abs
+  abun_table_abs <- abun_table_abs[,-c(1:9)]
+  # We have now a table with the column being each sample
+  # The row are the ASV assigned to a bacteria in the taxonomy table
+  
+  # Clear the column name
+  colnames(abun_table_abs) <- str_remove(colnames(abun_table_abs), "_metaphlan_profile")
+  colnames(abun_table_abs) <- str_remove(colnames(abun_table_abs), "r") #That was useful for sequencing to know which tube to use, it stood for "redone" when there was not enough DNA. We can remove it now
+  colnames(abun_table_abs) <- str_remove(colnames(abun_table_abs), "t") #That was useful for sequencing to know which tube to use, it stood for "redone" when there was not enough DNA. We can remove it now
+  
+  # Set as otu_table phyloseq object
+  abun_table_abs <- as.matrix(abun_table_abs)
+  class(abun_table_abs) <- "numeric"
+  abundance_table_abs = otu_table(abun_table_abs, taxa_are_rows = TRUE)
+  
+  # We have now a tax table and an otu table, we can create our phyloseq
+  physeq_abs <- phyloseq(taxonomy_table_abs, abundance_table_abs)
+  get_taxa_unique(physeq_abs, "Kingdom") 
+  
+# Add metadata to phyloseq object
+  rownames(metadata_df) <- metadata_df$NovogeneID
+  metadata = sample_data(metadata_df)
+  
+  physeq_abs <- merge_phyloseq(physeq_abs, metadata)
+  head(sample_data(physeq_abs))
+    
+# Erase data frames and vectors that are not necessary anymore
+  rm("tax_names_abs", "abun_table_abs", "asv_num_abs", "tax_table_abs", "metadata")
+
+# Phyloseq object description
+  physeq_abs # 2445 taxa
+  
+```
+
+# 5. Remove eukaryotes and filter phyloseq object
+## Remove all eukaryotes
+```{r}
+# Remove all the eukaryotes from the tax table (keep only bacteria and archea)
+  physeq_ra_filt <- subset_taxa(physeq_ra, Kingdom != "Eukaryota")
+  physeq_abs_filt <- subset_taxa(physeq_abs, Kingdom != "Eukaryota")
+
+# Transform in relative abundance (again because we've removed eukaryotes)
+  physeq_ra_filt <- transform_sample_counts(physeq_ra_filt, function(x) x / sum(x)) 
+  physeq_ra_filt # see what is inside now
+  # 2434 taxa => 11 taxa were removed corresponding to eukaryota
+```
+
+# 6. Top 20 most abundant taxa
+Top 20 most abundant taxa and 1 "other" category with the rest of the taxa
+```{r}
+# Child
+  phy_fam = tax_glom(physeq_ra_filt, taxrank = "Family") # 383 families
+  phy_fam_C <- subset_samples(phy_fam, individual == "Child")
+  # Create phyloseq object of the top 20 families
+    TopFam_Ctrl_C <- names(sort(taxa_sums(phy_fam_C), TRUE)[1:20]) #Take the 20 most abundant families in children's samples
+    CtrlFam20_C <- prune_taxa(TopFam_Ctrl_C, phy_fam_C) #Create a new phyloseq object containing only the 20 most abundant families
+  # Create phyloseq object of other families (from rank 21 to xxx)
+    OtherF_Ctrl_C <- names(sort(taxa_sums(phy_fam_C), TRUE)[c(21:383)]) #change here depending on the number of families you initially have
+    CtrlF_other_C <- prune_taxa(OtherF_Ctrl_C, phy_fam_C)
+    others_otu_C <- t(as.matrix(apply(otu_table(CtrlF_other_C), 2, sum))) #sum the abundance for all the "others" family (not top 20)
+    rownames(others_otu_C) <- "Others Families"
+    others_otu_C = otu_table(others_otu_C, taxa_are_rows = TRUE) #create an OTU table for phyloseq
+    other_taxF_C <- c("Others","Others","Others","Others","Others","Others","Others", "Others") #Put "Others" for each taxonomic rank
+    other_taxF_C <- as.matrix(other_taxF_C)
+    rownames(other_taxF_C) <- colnames(tax_table(CtrlF_other_C))
+    other_taxF_C <- t(other_taxF_C)
+    rownames(other_taxF_C) <- "Others Families"
+    other_taxF_C =  tax_table(other_taxF_C) #create a tax table for phyloseq
+    others_CtrlF_C = phyloseq(others_otu_C,other_taxF_C) #create the phyloseq object
+    others_CtrlF_C = merge_phyloseq(sample_data(phy_fam_C), others_CtrlF_C) #add metadata
+    others_CtrlF_C
+  # Regrouping both phyloseq objects into 1
+    ctrlF_C <- merge_phyloseq(CtrlFam20_C, others_CtrlF_C)
+    ctrlF_melt_C <- psmelt(ctrlF_C)
+  # Get the unique top 20 (+1 = other) families in children
+    unique(ctrlF_melt_C$Family)
+  
+# Mother
+  phy_fam = tax_glom(physeq_ra_filt, taxrank = "Family") # 383 families
+  phy_fam_M <- subset_samples(phy_fam, individual == "Mother")
+  # Create phyloseq object of the top 20 families
+    TopFam_Ctrl_M <- names(sort(taxa_sums(phy_fam_M), TRUE)[1:20])
+    CtrlFam20_M <- prune_taxa(TopFam_Ctrl_M, phy_fam_M)
+  # Create phyloseq object of other families (from rank 21 to xxx)
+    OtherF_Ctrl_M <- names(sort(taxa_sums(phy_fam_M), TRUE)[c(21:383)])
+    CtrlF_other_M <- prune_taxa(OtherF_Ctrl_M, phy_fam_M)
+    others_otu_M <- t(as.matrix(apply(otu_table(CtrlF_other_M), 2, sum))) #sum the abundance for all the "others" family (not top 20)
+    rownames(others_otu_M) <- "Others Families"
+    others_otu_M = otu_table(others_otu_M, taxa_are_rows = TRUE) #create an OTU table for phyloseq
+    other_taxF_M <- c("Others","Others","Others","Others","Others","Others","Others", "Others") #Put "Others" for each taxonomic rank
+    other_taxF_M <- as.matrix(other_taxF_M)
+    rownames(other_taxF_M) <- colnames(tax_table(CtrlF_other_M))
+    other_taxF_M <- t(other_taxF_M)
+    rownames(other_taxF_M) <- "Others Families"
+    other_taxF_M =  tax_table(other_taxF_M)
+    others_CtrlF_M = phyloseq(others_otu_M,other_taxF_M)
+    others_CtrlF_M = merge_phyloseq(sample_data(phy_fam_M), others_CtrlF_M)
+    others_CtrlF_M
+  # Regrouping phyloseq
+    ctrlF_M <- merge_phyloseq(CtrlFam20_M, others_CtrlF_M)
+    ctrlF_melt_M <- psmelt(ctrlF_M)
+  # Get the unique top 20 (+1 = other) families in mothers
+    unique(ctrlF_melt_M$Family)
+
+# Remove unwanted objects
+rm("phy_fam", "phy_fam_C", "TopFam_Ctrl_C", "CtrlFam20_C", "OtherF_Ctrl_C", "CtrlF_other_C", "others_otu_C", "other_taxF_C", "others_CtrlF_C", "phy_fam_M", "TopFam_Ctrl_M", "CtrlFam20_M", "OtherF_Ctrl_M", "CtrlF_other_M", "others_otu_M", "other_taxF_M", "others_CtrlF_M")
+
+```
+
+# 7. Work at different agglomeration levels
+```{r}
+# Taxonomy levels
+  phy_phy = tax_glom(physeq_ra_filt, taxrank = "Phylum")
+  phy_ra_phy <- transform_sample_counts(phy_phy, function(x) x / sum(x)) 
+  phy_abs_phy = tax_glom(physeq_abs_filt, taxrank = "Phylum")
+  #phy_phy_rel = tax_glom(physeq_rel, taxrank = "Phylum") #another way to do the same as above
+  phy_fam = tax_glom(physeq_ra_filt, taxrank = "Family")
+  phy_ra_fam <- transform_sample_counts(phy_fam, function(x) x / sum(x)) 
+  phy_abs_fam = tax_glom(physeq_abs_filt, taxrank = "Family")
+  #phy_fam_rel = tax_glom(physeq_rel, taxrank = "Family") #another way to do the same as above
+  phy_gen = tax_glom(physeq_ra_filt, taxrank = "Genus")
+  phy_ra_gen <- transform_sample_counts(phy_gen, function(x) x / sum(x))
+  phy_abs_gen = tax_glom(physeq_abs_filt, taxrank = "Genus")
+  #phy_gen_rel = tax_glom(physeq_rel, taxrank = "Genus") #another way to do the same as above      
+  phy_sp = tax_glom(physeq_ra_filt, taxrank = "Species")
+  phy_ra_sp <- transform_sample_counts(phy_sp, function(x) x / sum(x))
+  phy_abs_sp = tax_glom(physeq_abs_filt, taxrank = "Species")
+  #phy_sp_rel = tax_glom(physeq_rel, taxrank = "Species") #another way to do the same as above    
+      
+```
+
+# 8. Color palette
+```{r}
+library(RColorBrewer)
+palbrew_info <- RColorBrewer::brewer.pal.info[brewer.pal.info$category == "qual", ]  # Extract color info
+palbrew_all <- unlist(mapply(brewer.pal,                     # Create vector with all colors
+                             palbrew_info$maxcolors,
+                             rownames(palbrew_info)))
+pie(rep(1, 74), col = palbrew_all) #pour voir les couleurs
+
+palette39 = palbrew_all[1:39] #changer le nombre de couleurs en fonction de ce que j'ai besoin
+palette21 = palbrew_all[1:21] #changer le nombre de couleurs en fonction de ce que j'ai besoin
+
+get_taxa_unique(physeq_ra_filt, "Family") #381 families
+get_taxa_unique(ctrlF_C, "Family") #21 families
+get_taxa_unique(ctrlF_M, "Family") #21 families
+
+palette_fam = c("Acidaminococcaceae" = palbrew_all[1],
+                "Actinomycetaceae" = palbrew_all[2],
+                "Akkermansiaceae" = palbrew_all[3],
+                "Bacteroidaceae" = palbrew_all[4],
+                "Bifidobacteriaceae" = palbrew_all[5],
+                "Clostridiaceae" = palbrew_all[6],
+                "Coriobacteriaceae" = palbrew_all[7],
+                "Enterobacteriaceae" = palbrew_all[8],
+                "Enterococcaceae" = palbrew_all[9],
+                "Erysipelotrichaceae" = palbrew_all[10],
+                "Eubacteriaceae" = palbrew_all[11],
+                "Eubacteriales_unclassified" = palbrew_all[12],
+                "FGB629" = palbrew_all[13],
+                "Fusobacteriaceae" = palbrew_all[14],
+                "Lachnospiraceae" = palbrew_all[15],
+                "Lactobacillaceae" = palbrew_all[16],
+                "Moraxellaceae" = palbrew_all[17],
+                "Oscillospiraceae" = palbrew_all[18],
+                "Prevotellaceae" = palbrew_all[19],
+                "Rikenellaceae" = palbrew_all[20],
+                "Selenomonadaceae" = palbrew_all[21],
+                "Staphylococcaceae" = palbrew_all[22],
+                "Streptococcaceae" = palbrew_all[23],
+                "Sutterellaceae" = palbrew_all[24],
+                "Tannerellaceae" = palbrew_all[25],
+                "Veillonellaceae" = palbrew_all[26],
+                "Others" = palbrew_all[30]) # number 27 is too close to number 4
+
+pal_muac = values = c("Normally nourished" = "#f7bf83",
+                      "Overnourished" = "#83f7bf",
+                      "Undernourished" = "#f78583")
+
+pal_bmi = values = c("Normoweight" = "#f7bf83",
+                      "Overweight" = "#83f7bf",
+                      "Underweight" = "#f78583")
+
+pal_howborn = values=c("paleturquoise2", "lightgoldenrod1", "lightsalmon1")
+
+```
+
+# 9. Epidemiological description
+## 9.1 Demographic infos
+```{r}
+# Table
+  metadata_df %>%
+    filter(Visit == "Inc") %>%
+    gtsummary::tbl_summary(
+      include = c(all_of(animals), "s90_spec"),
+      by = "district_cat", #classif etc (categorie)
+      missing_text = "NA",
+      #missing = "no",
+      statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+    ) %>%
+    add_overall(last = TRUE) %>%
+    add_p() %>%
+    bold_labels()
+  
+# Plot
+  metadata_df %>%
+    filter(Visit == "Inc") %>%
+    ggplot(aes(x = classif, y = age, color = classif)) +
+    geom_boxplot() + 
+    theme_bw() +
+    scale_color_manual(values = pal_muac) +
+    theme(legend.position="bottom", 
+          legend.text=element_text(size = 8), 
+          plot.title = element_text(hjust = 0.5)) +
+    ggtitle("Age") +
+    stat_compare_means(label = "p.signif")
+  
+```
+
+## 9.2 Food consumption women inclusion
+```{r}
+metadata_df %>%
+  filter(Visit == "Inc") %>%
+  gtsummary::tbl_summary(
+    include = c("legumes", "fruits", "meat", "vegetables", "starch", "s101", "s103", "s104", "s105", "s111"),
+    by = "classif", #classif etc (categorie)
+    missing_text = "NA",
+    #missing = "no",
+    statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+  ) %>%
+  add_overall(last = TRUE) %>%
+  add_p() %>%
+  bold_labels()
+
+metadata_df %>%
+  filter(Visit == "Inc") %>%
+  gtsummary::tbl_summary(
+    include = c(all_of(mother_nutrition_freq)),
+    by = "classif", #classif etc (categorie)
+    missing_text = "NA",
+    #missing = "no",
+    statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+  ) %>%
+  add_overall(last = TRUE) %>%
+  add_p() %>%
+  bold_labels()
+
+# Frequency of protein and legumes food
+metadata_df %>%
+  filter(Visit == "Inc") %>%
+  gtsummary::tbl_summary(include = c("s190", "s194", "s196", "s197", "s198", "s199", "s200", "s201", "s202", "s203"))
+  # 56.9% of women consume at least once a week (daily or weekly) one of these sources of proteins
+
+metadata_df %>%
+  filter(Visit == "Inc") %>%
+  gtsummary::tbl_summary(include = c("s191", "s192", "s193"))
+  # 64.8% of women consume at least once a week (daily or weekly) one of these sources of legumes
+                
+```
+
+## 9.3 Food consumption women 1wpp
+```{r}
+metadata_df %>%
+  filter(Visit == "W1") %>%
+  filter(individual == "Mother") %>%
+  filter(!is.na(vdate)) %>%
+  filter(calive == "Yes") %>%
+  gtsummary::tbl_summary(
+    include = c(all_of(mother_nutrition_24h)),
+    by = "classif", #classif etc (categorie)
+    #missing_text = "NA",
+    missing = "no",
+    statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+  ) %>%
+  add_overall(last = TRUE) %>%
+  add_p() %>%
+  bold_labels()
+```
+
+## 9.4 Birth related
+```{r}
+metadata_df <- metadata_df %>%
+  mutate(estweek = as.numeric(as.character(estweek)))
+
+# Table
+  metadata_df %>%
+    filter(Visit == "W1") %>%
+    filter(individual == "Child") %>%
+    filter(!is.na(vdate)) %>%
+    filter(calive == "Yes") %>%
+    gtsummary::tbl_summary(
+      include = c("estweek_cat", "estweek"), #c(all_of(pregnancy) or "mean_weightc", "mean_heightc", "ch14", "ch13", estweek_cat", "s34", "s35", "s36", "s37", "howborn", "whereborn", "s51x",  "agechild", "bf2", "ch13", "ch14"
+      by = "classif", #classif etc (categorie)
+      missing_text = "NA",
+      type = list(estweek ~ "continuous"),
+      #missing = "no",
+      statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+    ) %>%
+    add_overall(last = TRUE) %>%
+    add_p() %>%
+    bold_labels() %>%
+    add_ci() 
+
+
+# Plot
+  metadata_df %>%
+    filter(Visit == "W1") %>%
+      ggplot(aes(x = classif, y = estweek_cat, color = classif)) +
+      geom_boxplot() + 
+      theme_bw() +
+      scale_color_manual(values=pal_muac) +
+      theme(legend.position="bottom", 
+            legend.text=element_text(size = 8), 
+            plot.title = element_text(hjust = 0.5)) +
+      ggtitle("Age") +
+      stat_compare_means(method = "wilcox.test", label = "p.signif")
+  
+  
+# Antibiotics consumption
+  metadata_df %>%
+    filter(individual == "Mother") %>%
+      filter(Visit == "Inc") %>%
+        pull(ATB_med_M) %>%
+          table()
+  # There are 71/267 women who used antibiotics while pregnant
+    
+  metadata_df %>%
+    filter(individual == "Mother") %>%
+      filter(Visit == "W1") %>%
+        pull(ATB_med_M) %>%
+          table()
+
+  metadata_df %>%
+    filter(individual == "Child") %>%
+      filter(Visit == "W1") %>%
+        pull(ATB_med_C) %>%
+          table()
+```
+
+## 9.5 Breastmilk follow up
+```{r}
+bm_followup %>%
+  ggplot(aes(x = Breasfed, fill = Visit)) +
+  geom_col(position = "dodge", width = 0.2, aes(y = Percentage, group = 1)) +
+  guides(fill = guide_legend(nrow = 2, override.aes = list(size = 10))) +
+  scale_fill_manual(breaks = c("1 week post partum", "3 months post partum", "6 months post partum", "12 months post partum"), values=c("#96ceb4", "#ffeead","#ff6f69", "#ffcc5c")) +
+  xlab("Low diet diversity score for mother") + ylab("Percentage of breastfed baby") +
+  theme_bw() +
+  theme(legend.position="bottom", 
+        legend.text = element_text(size = 25, margin = margin(10,0,00,10)),
+        legend.title = element_text(size = 30, face="italic", margin = margin(10,10,00,0)),
+        axis.text.x = element_text(size = 30, margin = margin(20,0,10,0)), #margin = top, right, bottom, left
+        axis.text.y = element_text(size = 30, margin = margin(0,10,0,10)),
+        axis.title = element_text(size = 30, face="bold")) +
+  labs(fill = "Visit") +
+  facet_wrap(~ factor(Visit, levels = c("1 week post partum", "3 months post partum", "6 months post partum", "12 months post partum")), nrow =1) +
+  theme(strip.text = element_text(size = 20))
+```
+
+## 9.6 Weight difference between birth and 1yo
+```{r}
+m12weight %>%
+  gtsummary::tbl_summary(
+    include = c("weightdiff"),
+    by = "classif", #classif etc (categorie)
+    missing_text = "NA",
+    #missing = "no",
+    statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+  ) %>%
+  add_overall(last = TRUE) %>%
+  add_p() %>%
+  bold_labels()
+```
+
+## 9.7 Diet Diversity scores at pregnancy and 1wpp visits
+```{r}
+# Tables
+  metadata_df %>%
+    filter(Visit == "Inc") %>%
+    filter(individual == "Mother") %>%
+    filter(!is.na(vdate)) %>%
+    filter(calive == "Yes") %>%
+    gtsummary::tbl_summary(
+      include = c("lddm", "ddsm" , "asfm"),
+      by = "classif", #classif etc (categorie)
+      #missing_text = "NA",
+      missing = "no",
+      statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+    ) %>%
+    add_overall(last = TRUE) %>%
+    add_p() %>%
+    bold_labels()
+
+ metadata_df %>%
+    filter(individual == "Mother") %>%
+    filter(!is.na(vdate)) %>%
+    filter(calive == "Yes") %>%
+    gtsummary::tbl_summary(
+      include = c("lddm"),
+      by = "Visit", #classif etc (categorie)
+      #missing_text = "NA",
+      missing = "no",
+      statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+    ) %>%
+    add_overall(last = TRUE) %>%
+    add_p() %>%
+    bold_labels()
+  
+  metadata_df %>%
+    filter(Visit == "W1") %>%
+    filter(individual == "Mother") %>%
+    filter(!is.na(vdate)) %>%
+    filter(calive == "Yes") %>%
+    gtsummary::tbl_summary(
+      include = c("ddsm", "lddm", "asfm"),
+      by = "classif", #classif etc (categorie)
+      #missing_text = "NA",
+      missing = "no",
+      statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+    ) %>%
+    add_overall(last = TRUE) %>%
+    add_p() %>%
+    bold_labels()
+
+# Boxplots
+  visits = c("Inc" = "Inclusion visit", "W1" = "1 week post-partum visit")
+  
+  pdf("Diet diversity score mothers - boxplots.pdf", height = 7, width = 10)
+  metadata_df %>%
+    filter(individual == "Mother") %>%
+    filter(!is.na(vdate)) %>%
+    filter(calive == "Yes") %>%
+    ggplot(aes(x = classif, y = ddsm)) +
+    geom_boxplot(aes(color = classif)) +
+    geom_point(position = position_jitter(h=0.15, w=0.15), aes(color = classif), size = 0.5) + 
+    scale_color_manual(values = pal_muac) +
+    xlab("Nutritional classification [MUAC]") +
+    ylab("Diet diversity score for mother") +
+    theme_bw() +
+    theme(legend.position="none", 
+          legend.text=element_text(size = 8), 
+          plot.title = element_text(hjust = 0.5), 
+    ) + 
+    facet_wrap(vars(Visit), labeller = as_labeller(visits))
+  dev.off()
+  
+  # Colors for visits (curves inside each panel)
+  pal_visit = c("Inc" = "#cc79a7",
+                "W1"  = "#e69f00")
+  visit_labels = c("Inc" = "INC",
+                 "W1"  = "1 WPP")
+  
+  pdf("Diet diversity score mothers - boxplot2.pdf", height = 6, width = 6)
+  metadata_df %>%
+    filter(individual == "Mother",
+           !is.na(vdate),
+           calive == "Yes",
+           !is.na(ddsm)) %>%
+    ggplot(aes(x = Visit, y = ddsm, fill = Visit)) +
+    geom_boxplot(alpha = 0.7, width = 0.6, outlier.shape = 16) +
+    stat_compare_means(method = "wilcox.test",   # or "t.test"
+                       label = "p.format",
+                       label.x = 1.3) +
+    scale_fill_manual(values = pal_visit, labels = visit_labels, name = NULL) +
+    scale_x_discrete(labels = visit_labels) +
+    facet_wrap(vars(classif),
+               labeller = labeller(classif = label_value)) +
+    labs(x = "Visit",
+         y = "Diet diversity score (DDS)",
+         fill = "Visit") +
+    theme_bw() +
+    theme(strip.background = element_rect(fill = "white"),
+          strip.text = element_text(size = 11, face = "bold"),
+          legend.position = "none",
+          plot.title = element_text(hjust = 0.5),
+          axis.title.y = element_text(size = 10),
+          axis.title.x = element_blank())
+  dev.off()
+
+# Density plots
+  pdf("Diet diversity score mothers - density.pdf", height = 8, width = 10)
+  metadata_df %>%
+    filter(individual == "Mother",
+           !is.na(vdate),
+           calive == "Yes",
+           !is.na(ddsm)) %>%
+    ggplot(aes(x = ddsm, color = Visit, fill = Visit)) +
+    geom_density(alpha = 0.35, linewidth = 1) +
+    scale_color_manual(values = pal_visit, labels = visit_labels, name = NULL) +
+    scale_fill_manual(values = pal_visit, labels = visit_labels, name = NULL) +
+    facet_wrap(vars(classif),
+               labeller = labeller(classif = label_value)) +
+    labs(x = "Diet diversity score (DDS)",
+         y = "Density",
+         color = "Visit",
+         fill  = "Visit") +
+    theme_bw() +
+    theme(
+      strip.background = element_rect(fill = "white"),
+      strip.text = element_text(size = 11, face = "bold"),
+      legend.position = "bottom",
+      plot.title = element_text(hjust = 0.5)
+    )
+  dev.off()
+    
+# Histograms
+  visits_names = c("Inc" = "Inclusion", "W1" = "1 week post-partum", "Normally nourished" = "Normally nourished", "Overnourished" = "Overnourished", "Undernourished" = "Undernourished")
+  
+  pdf("Diet diversity score mothers.pdf", height = 20, width = 40)
+  metadata_df %>%
+    filter(individual == "Mother") %>%
+    filter(!is.na(vdate)) %>%
+    filter(calive == "Yes") %>%
+    ggplot(aes(x = ddsm, fill = classif)) +
+    geom_bar(position = "dodge", aes(y = 100*(..prop..), group = 1)) +
+    guides(fill = guide_legend(override.aes = list(size = 10))) +
+    scale_fill_manual(values = pal_muac) +
+    xlab("Diet diversity score for mother") + ylab("Percentage of women") +
+    theme_bw() +
+    theme(legend.position="bottom", 
+          legend.text = element_text(size = 25,  margin = margin(10,0,00,0)),
+          legend.title = element_text(size = 30, face="italic", margin = margin(10,0,00,0)),
+          axis.text.x = element_text(size = 30, margin = margin(20,0,10,0)), #margin = top, right, bottom, left
+          axis.text.y = element_text(size = 30, margin = margin(0,10,0,10)),
+          axis.title = element_text(size = 30, face="bold")) +
+    labs(fill = "Nutritional classification") +
+    facet_wrap(Visit ~ classif, labeller = as_labeller(visits_names)) +
+    theme(strip.text = element_text(size = 20))
+  dev.off()
+```
+
+## 9.8 Low diet diversity score
+```{r}
+visits_names = c("Inc" = "Inclusion", "W1" = "1 week post-partum", "Normally nourished" = "Normally nourished", "Overnourished" = "Overnourished", "Undernourished" = "Undernourished")
+  
+pdf("Low Diet diversity score mothers.pdf", height = 20, width = 20)
+metadata_df %>%
+  filter(individual == "Mother") %>%
+  filter(!is.na(vdate)) %>%
+  filter(calive == "Yes") %>%
+  ggplot(aes(x = lddm, fill = classif)) +
+  geom_bar(position = "dodge", width = 0.2, aes(y = 100*(..prop..), group = 1)) +
+  guides(fill = guide_legend(override.aes = list(size = 10))) +
+  scale_fill_manual(values = pal_muac) +
+  xlab("Low diet diversity score for mother") + ylab("Percentage of women") +
+  theme_bw() +
+  theme(legend.position="bottom", 
+        legend.text = element_text(size = 25,  margin = margin(10,0,00,10)),
+        legend.title = element_text(size = 30, face="italic", margin = margin(10,10,00,0)),
+        axis.text.x = element_text(size = 30, margin = margin(20,0,10,0)), #margin = top, right, bottom, left
+        axis.text.y = element_text(size = 30, margin = margin(0,10,0,10)),
+        axis.title = element_text(size = 30, face="bold")) +
+  labs(fill = "Nutritional classification") +
+  facet_wrap(Visit ~ classif, labeller = as_labeller(visits_names)) +
+  theme(strip.text = element_text(size = 20))
+dev.off()
+```
+
+# 10. Taxonomy description
+```{r}
+classif_names = c("Normally nourished" = "Normo", "Overnourished" = "Over", "Undernourished" = "Under")
+```
+
+## 10.1 Abundance taxonomy graph at the family level (top 20 - M+C)
+Get the top20 phyloseq objects in segment 9 of the code
+```{r}
+family_M_top20 = ctrlF_melt_M %>%
+  filter(individual == "Mother") %>%
+  filter(Visit == "Inc") %>%
+  ggplot(ggplot2::aes_string(x = "Sample", y = "Abundance", fill = "Family")) +
+  geom_bar(stat = "identity", position = "stack") +
+  theme_bw() +
+  scale_fill_manual(values = palette_fam) + #change in function of the number wanted
+  labs(title = "Top 20 families for maternal inclusion stool samples", x ="Sample (N = 245)", y = "Relative abundance", fill = "Top 20 families") +
+  theme(plot.title = element_text(size = 25),
+        legend.position = "right",
+        axis.text.x = element_text(angle = 90, vjust = 0.5, size = 7),
+        axis.text.y = element_text(size = 20),
+        axis.title = element_text(size = 20,face="bold"),
+        legend.title = element_text(size = 20,face="bold")) +
+  facet_grid(col = vars(classif), scales = "free_x", space = "free_x") + #labeller = as_labeller(classif_names)
+  theme(strip.text = element_text(size = 20))
+ggsave("family_M_top20.pdf", height = 15, width = 25)
+ggsave("family_M_top20.svg", height = 15, width = 30) 
+
+
+family_C_top20 = ctrlF_melt_C %>%
+  filter(individual == "Child") %>%
+  filter(Visit == "W1") %>%
+  ggplot(ggplot2::aes_string(x = "Sample", y = "Abundance", fill = "Family")) +
+  geom_bar(stat = "identity", position = "stack") +
+  theme_bw() +
+  scale_fill_manual(values = palette_fam) + #change in function of the number wanted
+  labs(title = "Top 20 families for children stool samples from 1-week post-partum visit", x ="Sample (N = 227)", y = "Relative abundance", fill = "Top 20 families") +
+  theme(plot.title = element_text(size = 25),
+        legend.position = "right", 
+        axis.text.x = element_text(angle = 90, vjust = 0.5, size = 7),
+        axis.text.y = element_text(size = 20),
+        axis.title = element_text(size = 20,face="bold"),
+        legend.title = element_text(size = 20,face="bold")) +
+  facet_grid(col = vars(classif), scales = "free_x", space = "free_x") + #labeller = as_labeller(classif_names)
+  theme(strip.text = element_text(size = 20))
+ggsave("family_C_top20.pdf", height = 15, width = 25)
+ggsave("family_C_top20.svg", height = 15, width = 30)
+```
+
+## 10.2 Abundance taxonomy graph at the family level (M+C)
+```{r}
+pdf("family_0.01_All.pdf", height = 40, width = 100)
+  dp_rel %>%
+    ggplot(aes_string(x = "Sample", y = "Abundance", fill = "Family")) +
+    geom_bar(stat = "identity", position = "stack") +
+    theme_bw() +
+    #scale_fill_manual(values = palette39) + #change in function of the number wanted
+    theme(plot.title = element_text(size = 50, margin = margin(0,0,30,0)),
+          legend.position = "bottom",
+          axis.text.x = element_text(angle = 90, size = 10), #vjust = 0.5,
+          axis.text.y = element_text(size = 40),
+          axis.title = element_text(size = 40,face="bold")) +
+    ggtitle("Relative abundance at the family level (>10%)") + 
+    facet_grid(col = vars(individual), scales = "free_x", space = "free_x") +
+    theme(panel.spacing.x = unit(4, "lines"), strip.text = element_text(size = 40))
+  dev.off()
+```
+
+# 11. Alpha diversity
+
+## 11.1 Generate alpha diversity metrics
+```{r}
+alpha = estimate_richness(physeq_abs_filt)
+alpha
+
+# Add alpha diversity metrics to data frame
+  NovogeneID <- rownames(alpha)
+  rownames(alpha) <- NULL
+  alpha <- cbind(NovogeneID,alpha)
+  metadata_df = dplyr::left_join(metadata_df, alpha, by = "NovogeneID")
+  
+# Test if the difference is significant between Mothers and Childrens' samples
+  wilcox.test(formula = Shannon ~ individual, data = metadata_df)
+  
+# Delete unecessary things
+  rm("NovogeneID")
+```
+
+## 11.2 Alpha diversity of the children and mother stool microbiomes [Boxplots (M+C)]
+```{r}
+Sha = ggplot(metadata_df, aes(x = individual, y = Shannon, color = individual)) +
+            geom_boxplot() + 
+            theme_bw() +
+            scale_color_manual(values=c("#E69F00", "#56B4E9")) +
+            theme(legend.position="bottom", 
+                  legend.text=element_text(size = 8), 
+                  plot.title = element_text(hjust = 0.5), 
+                  axis.title.y=element_blank(),
+                  axis.title.x=element_blank(),
+                  axis.text.x=element_blank(),
+                  axis.ticks.x=element_blank()
+                  ) + 
+            ggtitle("Shannon index") +
+            ggpubr::stat_compare_means(method = "wilcox.test", label.x = 1, label.y = 7, size = 3) +      # Add global p-value
+            ggpubr::stat_compare_means(label = "p.signif", method = "wilcox.test")
+      
+Obs = ggplot(metadata_df, aes(x = individual, y = Observed, color = individual)) +
+            geom_boxplot() + #Add p-value from the test below
+            scale_color_manual(values=c("#E69F00", "#56B4E9")) +
+            theme_bw() +
+            theme(legend.position="bottom", 
+                  legend.text=element_text(size=8), 
+                  plot.title = element_text(hjust = 0.5), 
+                  axis.title.y=element_blank(),
+                  axis.title.x=element_blank(),
+                  axis.text.x=element_blank(),
+                  axis.ticks.x=element_blank()
+                  ) + 
+            ggtitle("Observed index") +
+            ggpubr::stat_compare_means(method = "wilcox.test", label.x = 1, label.y = 600, size = 3) +      # Add global p-value
+            ggpubr::stat_compare_means(label = "p.signif", method = "wilcox.test")
+
+InvS = ggplot(metadata_df, aes(x = individual, y = InvSimpson, color = individual)) +
+              geom_boxplot() + #Add p-value from the test below
+              scale_color_manual(values=c("#E69F00", "#56B4E9")) +
+              theme_bw() +
+              theme(legend.position="bottom", 
+                    legend.text=element_text(size=8), 
+                    plot.title = element_text(hjust = 0.5), 
+                    axis.title.y=element_blank(),
+                    axis.title.x=element_blank(),
+                    axis.text.x=element_blank(),
+                    axis.ticks.x=element_blank()
+                    ) + 
+              ggtitle("Inverse Simpson index") +
+              ggpubr::stat_compare_means(method = "wilcox.test", label.x = 1, label.y = 75, size = 3) +      # Add global p-value
+              ggpubr::stat_compare_means(label = "p.signif", method = "wilcox.test")
+
+alphadiv = ggarrange(Obs, Sha, InvS, 
+             nrow = 1,
+             widths = c(1, 1, 1),
+             common.legend = TRUE, legend="bottom")
+
+annotate_figure(alphadiv, top = text_grob("Alpha diversity measures",
+                                      color = "black", face = "bold", size = 14))
+
+# Delete unecessary things
+  rm("Sha", "Obs", "InvS", "alphadiv")
+```
+
+## 11.3 Alpha diversity of the children stool microbiota in function of the maternal nutritional classification
+```{r}
+comp_classif <- list( c("Normally nourished", "Overnourished"), c("Normally nourished", "Undernourished"), c("Overnourished", "Undernourished") )
+comp_prepregbmi <- list( c("Normoweight", "Overweight"), c("Normoweight", "Underweight"), c("Overweight", "Underweight") )
+
+Sha_C = metadata_df %>%
+  filter(individual == "Child") %>% 
+  ggplot(aes(x = classif, y = Shannon, color = classif)) + #classif or prepregbmi_cat
+  geom_boxplot() + 
+  theme_bw() +
+  scale_color_manual(values = pal_muac) + #pal_muac or pal_bmi
+  scale_x_discrete(labels = c("NN", "ON", "UN")) +
+  theme(legend.position="none", 
+        legend.text=element_text(size = 8), 
+        plot.title = element_text(hjust = 0.5), 
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x=element_text(),
+        axis.ticks.x=element_blank()) + 
+  labs(color = "Nutritional classification") + #"Pre-pregnancy BMI categories" for prepregbmi_cat
+  ggtitle("Shannon index") +
+  ggpubr::stat_compare_means(label.x = 1.1, label.y = 4, size = 3.5) +  
+  ggpubr::stat_compare_means(comparisons = comp_classif) +      # Add global p-value // put either comp_classif or comp_prepregbmi
+  ggpubr::stat_compare_means(label = "p.signif", label.x = 2, label.y = 3.8) # label.x = 2.8, label.y = 4
+
+
+Obs_C = metadata_df %>%
+  filter(individual == "Child") %>% 
+  ggplot(aes(x = classif, y = Observed, color = classif)) +
+  geom_boxplot() + #Add p-value from the test below
+  scale_color_manual(values = pal_muac) + 
+  scale_x_discrete(labels = c("NN", "ON", "UN")) +
+  theme_bw() +
+  theme(legend.position="none", 
+        legend.text=element_text(size=8), 
+        plot.title = element_text(hjust = 0.5), 
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x=element_text(),
+        axis.ticks.x=element_blank()) + 
+  labs(color = "Nutritional classification") + #"Pre-pregnancy BMI categories" for prepregbmi_cat
+  ggtitle("Observed index") +
+  ggpubr::stat_compare_means(label.x = 1.1, label.y = 180, size = 3.5) +
+  ggpubr::stat_compare_means(comparisons = comp_classif) +      # Add global p-value
+  ggpubr::stat_compare_means(label = "p.signif", label.x = 2, label.y = 172) # label.x = 2.8, label.y = 180
+
+
+InvS_C = metadata_df %>%
+  filter(individual == "Child") %>% 
+  ggplot(aes(x = classif, y = InvSimpson, color = classif)) +
+  geom_boxplot() + #Add p-value from the test below
+  scale_color_manual(values = pal_muac) +
+  scale_x_discrete(labels = c("NN", "ON", "UN")) +
+  theme_bw() +
+  theme(legend.position="none", 
+        legend.text=element_text(size=8), 
+        plot.title = element_text(hjust = 0.5), 
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x=element_text(),
+        axis.ticks.x=element_blank()) + 
+  labs(color = "Nutritional classification") + #"Pre-pregnancy BMI categories" for prepregbmi_cat
+  ggtitle("Inverse Simpson index") +
+  ggpubr::stat_compare_means(label.x = 1.1, label.y = 14, size = 3.5) +  
+  ggpubr::stat_compare_means(comparisons = comp_classif) +      # Add global p-value
+  ggpubr::stat_compare_means(label = "p.signif", label.x = 2, label.y = 13.4) # label.x = 2.8, label.y = 14
+
+
+alphadiv_C = ggpubr::ggarrange(Obs_C, Sha_C, InvS_C, 
+                     nrow = 1,
+                     widths = c(1, 1, 1),
+                     common.legend = FALSE) # common.legend = TRUE, legend="bottom"
+
+ggpubr::annotate_figure(alphadiv_C, top = ggpubr::text_grob("Alpha diversity measures - Child",
+                                          color = "black", face = "bold", size = 14))
+
+# Delete unecessary things
+  rm("Sha_C", "Obs_C", "InvS_C", "alphadiv_C", "comp_classif", "comp_prepregbmi")
+```
+
+## 11.4 Alpha diversity of the mother stool microbiota in function of their nutritional classification
+```{r}
+comp_classif <- list( c("Normally nourished", "Overnourished"), c("Normally nourished", "Undernourished"), c("Overnourished", "Undernourished") )
+    
+Sha_M = metadata_df %>%
+  filter(individual == "Mother") %>% 
+  ggplot(aes(x = classif, y = Shannon, color = classif)) +
+  geom_boxplot() + 
+  theme_bw() +
+  scale_color_manual(values = pal_muac) +
+  theme(legend.position="bottom", 
+        legend.text=element_text(size = 8), 
+        plot.title = element_text(hjust = 0.5), 
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) + 
+  labs(color = "Nutritional classification") +
+  ggtitle("Shannon index") +
+  stat_compare_means(label.x = 1.35, label.y = 6.5) +  
+  stat_compare_means(comparisons = comp_classif) +      # Add global p-value
+  stat_compare_means(label = "p.signif", label.x = 2.8, label.y = 6.5)
+
+  
+Obs_M = metadata_df %>%
+  filter(individual == "Mother") %>% 
+  ggplot(aes(x = classif, y = Observed, color = classif)) +
+  geom_boxplot() + #Add p-value from the test below
+  scale_color_manual(values = pal_muac) +
+  theme_bw() +
+  theme(legend.position="bottom", 
+        legend.text=element_text(size=8), 
+        plot.title = element_text(hjust = 0.5), 
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) + 
+  labs(color = "Nutritional classification") +
+  ggtitle("Observed index") +
+  stat_compare_means(label.x = 1.35, label.y = 750) +
+  stat_compare_means(comparisons = comp_classif) +      # Add global p-value
+  stat_compare_means(label = "p.signif", label.x = 2.8, label.y = 750)
+
+InvS_M = metadata_df %>%
+  filter(individual == "Mother") %>% 
+  ggplot(aes(x = classif, y = InvSimpson, color = classif)) +
+  geom_boxplot() + #Add p-value from the test below
+  scale_color_manual(values = pal_muac) +
+  theme_bw() +
+  theme(legend.position="bottom", 
+        legend.text=element_text(size=8), 
+        plot.title = element_text(hjust = 0.5), 
+        axis.title.y=element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) + 
+  labs(color = "Nutritional classification") +
+  ggtitle("Inverse Simpson index") +
+  stat_compare_means(label.x = 1.35, label.y = 100) +  
+  stat_compare_means(comparisons = comp_classif) +      # Add global p-value
+  stat_compare_means(label = "p.signif", label.x = 2.8, label.y = 100)
+
+alphadiv_M = ggarrange(Obs_M, Sha_M, InvS_M, 
+                       nrow = 1,
+                       widths = c(1, 1, 1),
+                       common.legend = TRUE, legend="bottom")
+
+annotate_figure(alphadiv_M, top = text_grob("Alpha diversity measures - Mother", 
+                                            color = "black", face = "bold", size = 14))
+
+
+# Delete unecessary things
+  rm("Sha_M", "Obs_M", "InvS_M", "alphadiv_M", "comp_classif")
+```
+
+## 11.5 Table with all the alpha diversity metrics
+```{r}
+# Child
+  metadata_df %>%
+      filter(individual == "Child") %>%
+      filter(!is.na(vdate)) %>%
+      #filter(calive == "Yes") %>%
+      gtsummary::tbl_summary(
+        include = c("Observed", "Shannon", "Simpson", "InvSimpson", "Fisher"),
+        by = "classif", #classif etc (categorie)
+        missing_text = "NA",
+        #missing = "no",
+        statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+      ) %>%
+      add_overall(last = TRUE) %>%
+      add_p() %>%
+      bold_labels()
+    
+# Mother
+  metadata_df %>%
+      filter(individual == "Mother") %>%
+      filter(Visit == "Inc") %>%
+      gtsummary::tbl_summary(
+        include = c("Observed", "Shannon", "Simpson", "InvSimpson", "Fisher"),
+        by = "classif", #classif etc (categorie)
+        #missing_text = "NA",
+        missing = "no",
+        statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+      ) %>%
+      add_overall(last = TRUE) %>%
+      add_p() %>%
+      bold_labels()
+```
+
+# 12. Beta diversity 
+Effect of nutritional classification (MUAC) and mode of delivery on the stool microbiome
+
+## 12.1 Generate the distances between the samples (M+C) [PCoA - Beta diversity]
+```{r}
+# Mother and child together
+  dist_bc <- phyloseq::distance(physeq_ra_filt, method = "bray")
+  pcoa_br <- ordinate(physeq_ra_filt, "PCoA", dist_bc)
+
+# Children's samples only
+# Subset samples first
+physeq_child <- subset_samples(physeq_ra_filt, individual == "Child")
+  
+  # Bray Curtis
+    dist_bc_C <- phyloseq::distance(physeq_child, method = "bray")
+    pcoa_br_C <- ordinate(physeq_child, method = "PCoA", distance = dist_bc_C)
+  
+  # Euclidean 
+    dist_euc_C <- phyloseq::distance(subset_samples(physeq_ra_filt, individual == "Child"),
+                                     method = "euclidean")
+    pcoa_euc_C <- ordinate(physeq_ra_filt, "PCoA", dist_euc_C)
+  
+```
+
+## 12.2 PCoA of the M + C stool microbiomes (highlighting by MUAC classif and individuals)
+```{r}
+plot_ordination(physeq_ra_filt, pcoa_br, type = "samples", color = "classif", shape = "individual", title = "PCoA - Bray Curtis") + 
+      stat_ellipse(position = "identity") +
+      scale_color_manual(values = pal_muac) +
+      theme_bw() +
+      theme(plot.title = element_text(size = 20),
+            legend.text = element_text(size = 15,  margin = margin(10,0,00,0)),
+            legend.title = element_text(size = 15, face="italic", margin = margin(10,0,00,0)),
+            axis.text.x = element_text(size = 15, margin = margin(20,0,10,0)), #margin = top, right, bottom, left
+            axis.text.y = element_text(size = 15, margin = margin(0,10,0,10)),
+            axis.title = element_text(size = 15, face="bold")) +
+      labs(color = "Nutritional classification", shape = "Individual")
+```
+
+## 12.3 Beta-dispersion
+```{r}
+# For the mother by classif - PCoA
+ps_m <- subset_samples(physeq_ra_filt, individual == "Mother")
+bray_m <- phyloseq::distance(ps_m, method = "bray")
+
+ord_m <- ordinate(ps_m, method = "PCoA", distance = bray_m)
+
+p_m = plot_ordination(ps_m, ord_m, color = "classif") +
+  stat_ellipse(position = "identity", alpha = 0.2) +
+  geom_point(size = 1) +
+  scale_color_manual(values = pal_muac, name = "Maternal nutritional status") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 10)) +
+  ggtitle("Mothers – Bray-Curtis PCoA") +
+  annotate("text", x = -0.5, y = 0.5,  # adjust coordinates as needed
+           label = paste0("PERMANOVA: R² = 0.01, p = 0.007"), # \nPERMDISP: p = 0.10
+           hjust = 0, size = 3)
+
+# For the children by classif - PCoA
+ps_c <- subset_samples(physeq_ra_filt, individual == "Child")
+bray_c <- phyloseq::distance(ps_c, method = "bray")
+
+ord_c <- ordinate(ps_c, method = "PCoA", distance = bray_c)
+
+p_c = plot_ordination(ps_c, ord_c, color = "classif") +
+  stat_ellipse(position = "identity", alpha = 0.2) +
+  geom_point(size = 1) +
+  scale_color_manual(values = pal_muac, name = "Maternal nutritional status") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 10)) +
+  ggtitle("Children – Bray-Curtis PCoA") +
+  annotate("text", x = -0.6, y = 0.6,
+           label = paste0("PERMANOVA: R² = 0.01, p = 0.25"), # \nPERMDISP: p = 0.005
+           hjust = 0, size = 3)
+
+(p_m | p_c) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+# Beta dispersion
+meta_m <- sample_data(ps_m)
+meta_c <- sample_data(ps_c)
+
+disp_m <- betadisper(bray_m, meta_m$classif)
+disp_c <- betadisper(bray_c, meta_c$classif)
+
+# Extract the 6 dispersion values (for both mother and children and for the 3 classif => 6 total)
+disp_mothers <- tapply(disp_m$distances,
+                       meta_m$classif,
+                       mean)
+
+disp_children <- tapply(disp_c$distances,
+                        meta_c$classif,
+                        mean)
+
+df_m <- data.frame(distance = disp_m$distances, classif = disp_m$group)
+df_m$classif <- factor(df_m$classif, levels = c("Overnourished", "Normally nourished", "Undernourished"))
+pbox_m <- ggplot(df_m, aes(x = classif, y = distance, fill = classif)) +
+  geom_boxplot() +
+  scale_fill_manual(values = pal_muac, name = "Maternal nutritional status") +
+  scale_x_discrete(labels = c("ON", "NN", "UN")) +
+  theme_bw() +
+  ggtitle("Beta dispersion – Mothers") +
+  xlab("Maternal nutritional status") +
+  ylab("Distance to group centroid") +
+  theme(legend.position = "none",
+        plot.title = element_text(size = 10)) + 
+  annotate("text", x = 2, y = max(df_m$distance) * 1.05,
+           label = paste0("PERMDISP: p = 0.1"), # see below the test and result
+           hjust = 0.5, size = 4)
+
+df_c <- data.frame(distance = disp_c$distances, classif = disp_c$group)
+df_c$classif <- factor(df_c$classif, levels = c("Overnourished", "Normally nourished", "Undernourished"))
+pbox_c <- ggplot(df_c, aes(x = classif, y = distance, fill = classif)) +
+  geom_boxplot() +
+  scale_fill_manual(values = pal_muac, name = "Maternal nutritional status") +
+  scale_x_discrete(labels = c("ON", "NN", "UN")) +
+  theme_bw() +
+  ggtitle("Beta dispersion – Children") +
+  xlab(" Maternal nutritional status") +
+  ylab("Distance to group centroid") +
+  theme(legend.position = "none",
+        plot.title = element_text(size = 10)) +
+  annotate("text", x = 2, y = max(df_c$distance) * 1.05,
+           label = paste0("PERMDISP: p = 0.005"), # see below the test and result
+           hjust = 0.5, size = 4)
+
+(pbox_m | pbox_c) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "none")
+
+# Statistical test (PERMDISP) 
+set.seed(123)
+permutest(disp_m) 
+set.seed(123)
+permutest(disp_c) 
+
+# Statistical test (PERMANOVA) 
+meta_m <- data.frame(sample_data(ps_m))
+set.seed(123)
+perm_m <- adonis2(bray_m ~ classif,
+                  data = meta_m,
+                  permutations = 999
+                  )
+perm_m 
+
+meta_c <- data.frame(sample_data(ps_c))
+set.seed(123)
+perm_c <- adonis2(bray_c ~ classif,
+                  data = meta_c,
+                  permutations = 999
+                  )
+perm_c 
+
+# pairwise comparisons
+TukeyHSD(disp_m) 
+TukeyHSD(disp_c)
+```
+
+## 12.4 PCoA of the children stool microbiota only
+### 12.4.1 Highlighting by MUAC classif and mode of delivery together
+```{r}
+# Extract sample data (metadata)
+sample_data <- data.frame(sample_data(physeq_ra_filt))
+# Create a new combined factor for mode of delivery and classif
+sample_data$combined <- interaction(sample_data$classif, sample_data$howborn, sep = "_")
+# Add the new factor back to the phyloseq object
+sample_data(physeq_ra_filt) <- sample_data
+rm(sample_data)
+# Create color palette
+custom_colors <- c("Normally nourished_Planned cesarian section" = "darkgoldenrod1", 
+                   "Normally nourished_Unplanned cesarian section" = "#FFCC00", 
+                   "Normally nourished_Vaginally" = "#FF9933",
+                   "Overnourished_Planned cesarian section" = "coral1",
+                   "Overnourished_Unplanned cesarian section" = "#CC3300",
+                   "Overnourished_Vaginally" = "#FF3366",
+                   "Undernourished_Planned cesarian section" = "palegreen",
+                   "Undernourished_Unplanned cesarian section" = "#66CC99",
+                   "Undernourished_Vaginally" = "#33CC33")
+
+plot_ordination(physeq_ra_filt, pcoa_br_C, type = "samples", color = "combined", title = "PCoA - Bray Curtis - Children") +
+  stat_ellipse(position = "identity") +
+  scale_color_manual(values = custom_colors) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 20),
+        legend.text = element_text(size = 15,  margin = margin(10,0,00,0)),
+        legend.title = element_text(size = 15, face="italic", margin = margin(10,0,00,0)),
+        axis.text.x = element_text(size = 15, margin = margin(20,0,10,0)), #margin = top, right, bottom, left
+        axis.text.y = element_text(size = 15, margin = margin(0,10,0,10)),
+        axis.title = element_text(size = 15, face="bold")) +
+  labs(color = "Nutritional classification and mode of delivery")
+```
+
+### 12.4.2 By mode of delivery alone
+```{r}
+plot_ordination(physeq_ra_filt, pcoa_br_C, type = "samples", color = "howborn_combined", title = "PCoA - Bray Curtis - Children") +
+        stat_ellipse(position = "identity") +
+        scale_color_manual(values = c(`C-section` = "#88d8b0",
+                                      `Vaginally` = "#d888b0")) +
+        theme_bw() +
+        theme(legend.position = "bottom",
+              plot.title = element_text(size = 20),
+              legend.text = element_text(size = 15,  margin = margin(10,0,00,0)),
+              legend.title = element_text(size = 15, margin = margin(10,0,00,0)), #face="italic"
+              axis.text.x = element_text(size = 15, margin = margin(20,0,10,0)), #margin = top, right, bottom, left
+              axis.text.y = element_text(size = 15, margin = margin(0,10,0,10)),
+              axis.title = element_text(size = 15, face="bold")) +
+        labs(color = "Mode of delivery")
+```
+
+### 12.4.3 By MUAC classif alone
+```{r}
+plot_ordination(physeq_ra_filt, pcoa_br_C, type = "samples", color = "classif", title = "PCoA - Bray Curtis - Children") +
+        stat_ellipse(position = "identity") +
+        scale_color_manual(values = pal_muac) +
+        theme_bw() +
+        theme(plot.title = element_text(size = 20),
+              legend.text = element_text(size = 15,  margin = margin(10,0,00,0)),
+              legend.title = element_text(size = 15, face="italic", margin = margin(10,0,00,0)),
+              axis.text.x = element_text(size = 15, margin = margin(20,0,10,0)), #margin = top, right, bottom, left
+              axis.text.y = element_text(size = 15, margin = margin(0,10,0,10)),
+              axis.title = element_text(size = 15, face="bold")) +
+        labs(color = "Nutritional classification")
+```
+
+### 12.4.4 By pre pregnancy BMI categories
+```{r}    
+plot_ordination(physeq_ra_filt, pcoa_euc_C, type = "samples", color = "prepregbmi_cat", title = "PCoA - Euclidean - Children") +
+  stat_ellipse(position = "identity") + # explicitly set color in stat_ellipse
+  scale_color_manual(values = pal_bmi) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 20),
+        legend.text = element_text(size = 15,  margin = margin(10,0,00,0)),
+        legend.title = element_text(size = 15, face="italic", margin = margin(10,0,00,0)),
+        axis.text.x = element_text(size = 15, margin = margin(20,0,10,0)), #margin = top, right, bottom, left
+        axis.text.y = element_text(size = 15, margin = margin(0,10,0,10)),
+        axis.title = element_text(size = 15, face="bold")) +
+  labs(color = "Pre-pregnancy BMI categories")
+```
+
+## 12.5 Remove unecessary objects
+```{r}
+rm(pcoa_br, pcoa_br_C, pcoa_euc_C, dist_bc, dist_bc_C, dist_euc_C)
+```
+
+## 12.6 Get the relative abundance by species and by sample
+```{r}
+# Get the relative abundance by species and by sample
+  abun_ra_sp_df = abun_table_ra_df[, -c(473:478)]
+  abun_ra_sp_df = abun_ra_sp_df[, -474]
+  
+  # Sum abundance values across rows that share the same Species
+  abun_ra_sp_df <- abun_ra_sp_df %>%
+    dplyr::group_by(Species) %>%
+    dplyr::summarise(across(everything(), sum, na.rm = TRUE))
+  
+  # Pivot longer so we have one abundance per row
+  df_long <- abun_ra_sp_df %>%
+    pivot_longer(cols = -Species,                  # All columns except 'Species'
+                 names_to = "Sample",              # Former column names become 'Sample'
+                 values_to = "Abundance"           # Cell values become 'Abundance'
+                 )
+  
+  # Pivot wider to have species as columns
+  abun_ra_sp_df <- df_long %>%
+    pivot_wider(names_from = Species,             # New columns will be the species names
+                values_from = Abundance           # Cell values will be the abundance
+                )
+
+  # Remove unnecessary objects
+  rm("df_long") # rm(abun_table_ra_df)
+
+# Add the relative abundances to the metadata
+metadata_abun_df = metadata_df %>%
+  left_join(abun_ra_sp_df, by = c("SequencingID" = "Sample"))
+
+```
+
+## 12.7 Envfit to fit variables on the PCoA
+The aim here is to test the correlation between the relative abundance (children stool microbiomes) and different variables
+
+### 12.7.1 Family level
+```{r}
+phy_fam_C = tax_glom(physeq_child, taxrank = "Family")
+phy_ra_fam_C <- transform_sample_counts(phy_fam_C, function(x) x / sum(x)) 
+
+OTU_C = as(otu_table(phy_ra_fam_C), "matrix")
+otu_C <- as.data.frame(OTU_C)
+TAX_C = as(tax_table(phy_ra_fam_C), "matrix")
+tax_C <- as.data.frame(TAX_C)
+META_C = as(sample_data(phy_ra_fam_C), "matrix")
+meta_C <- as.data.frame(META_C)
+
+tax_otu_C <- cbind(tax_C, otu_C)
+tax_otu_C$Name <- str_c(tax_otu_C$Kingdom, '_',tax_otu_C$Phylum, '_', tax_otu_C$Class, '_', tax_otu_C$Order, '_', tax_otu_C$Family)
+n_distinct(tax_otu_C$Name)
+tax_otu_C[, 234] <- as.character(tax_otu_C[, 234])
+length(unique(tax_otu_C[,234]))
+rownames(tax_otu_C) <- tax_otu_C[,234]
+tax_otu_C <- tax_otu_C[,-c(1:8,234)]
+tax_otu_C <- t(tax_otu_C)
+class(tax_otu_C) <- "numeric"
+tax_otu_C <- as.data.frame(tax_otu_C)
+dist_C <- vegdist(tax_otu_C[, 1:383],  method = "bray")
+PCOA_C <- pcoa(dist_C)
+vectorPCOA_C <- cbind(PCOA_C$vectors[, 1:2])
+
+# Arrows and taxa name
+env.fit_fam_C <- envfit(vectorPCOA_C, tax_otu_C[,1:383], perm = 999) #Warning: the standard deviation is zero
+
+env.fit_C.sig  <- as.data.frame(scores(env.fit_fam_C, display = "vectors"))
+env.fit_C.vect <- as.list(env.fit_fam_C$vectors)
+coordinates_C <- cbind(as.data.frame(env.fit_C.vect$arrows*sqrt(env.fit_C.vect$r)), as.data.frame(env.fit_C.vect$pvals))
+coordinates_sign_C <- subset(coordinates_C, as.data.frame(env.fit_C.vect$pvals) <= 0.05)
+coordinates_sign_C <- cbind(coordinates_sign_C, species = rownames(coordinates_sign_C))
+arr_pvals_coord_C <- coordinates_sign_C %>%
+  mutate(Coord = (Axis.1*Axis.1)+(Axis.2*Axis.2))
+arr_pvals_coord_C[,5] <- as.numeric(arr_pvals_coord_C[,5])
+df_envfit_C <- scores(env.fit_fam_C,display=c("vectors"))
+df_envfit_C <- df_envfit_C*vegan:::ordiArrowMul(df_envfit_C)
+df_envfit_C <- as.data.frame(df_envfit_C)
+df_envfit_C$species <- rownames(df_envfit_C)
+df_envfit_C <- df_envfit_C %>% 
+  filter(species %in% coordinates_sign_C$species)
+arrows_names_C <- str_split_fixed(df_envfit_C$species, "_", 5)
+arrows_names_C <- as.data.frame(arrows_names_C)
+arrows_names_C <- arrows_names_C %>%
+  mutate(tax_name = case_when(
+    !str_detect(V5, "Unassigned") ~ V5,
+    !str_detect(V4, "Unassigned") ~ paste(V4, V5),
+    !str_detect(V3, "Unassigned") ~ paste(V3, V5),
+    str_detect(V3, "Unassigned") ~ paste(V2, V5),
+    TRUE ~ V5
+  ))
+df_envfit_C <- df_envfit_C %>% 
+  mutate(tax_name = arrows_names_C$tax_name)
+
+# Plotting
+ft.scores_C <- as.data.frame(vectorPCOA_C)
+ft.scores_C$fastqID <- rownames(tax_otu_C)
+which(rownames(meta_C) != rownames(ft.scores_C))
+
+
+ft.scores_C$classif <- meta_C$classif
+ft.scores_C$howborn_combined <- meta_C$howborn_combined
+ft.scores_C$district_cat <- meta_C$district_cat
+ft.scores_C <- distinct(ft.scores_C)
+
+per_explained_C <- 100*PCOA_C$values$Relative_eig / sum(PCOA_C$values$Relative_eig)
+per_explained_C <- round(per_explained_C[1:2], digits = 1)
+labs_C <- c(glue("Axis1 [{per_explained_C[1]}%]"),
+          glue("Axis2 [{per_explained_C[2]}%]"))
+
+
+ggplot() +
+   geom_point(data = ft.scores_C,
+              aes(x = Axis.1, y = Axis.2,
+                  color = classif, shape = howborn_combined),
+              size = 3, show.legend = TRUE) +
+  scale_color_manual(values = pal_muac, name = "Nutritional categorie (MUAC)") +
+  scale_shape_manual(limits = c("Vaginally", "C-section"), values=c(15:16), name = "Mode of delivery") +
+  geom_segment(aes(x = 0, y = 0, xend = df_envfit_C$Axis.1*0.5,yend = df_envfit_C$Axis.2*0.5),
+               arrow = arrow(length = unit(0.2, "cm")),color="#808080",alpha=0.5) +
+  geom_text(aes(df_envfit_C$Axis.1*0.52, df_envfit_C$Axis.2*0.52, label = df_envfit_C$tax_name, fontface=3), color="#303030",alpha=0.5, size=2) +
+  ggtitle("") +
+  xlab(labs_C[1]) +
+  ylab(labs_C[2]) +
+  theme_bw()
+
+# Permanova
+META_C <- as.data.frame(META_C)
+vegan::adonis2(dist_C ~ district_cat + classif, by = "margin", data = META_C, permutations = 9999)
+```
+
+### 12.7.2 Species level
+```{r}
+phy_sp_C = tax_glom(physeq_child, taxrank = "Species")
+phy_ra_sp_C <- transform_sample_counts(phy_sp_C, function(x) x / sum(x)) 
+
+OTU_C = as(otu_table(phy_ra_sp_C), "matrix")
+otu_C <- as.data.frame(OTU_C)
+TAX_C = as(tax_table(phy_ra_sp_C), "matrix")
+tax_C <- as.data.frame(TAX_C)
+META_C = as(sample_data(phy_ra_sp_C), "matrix")
+meta_C <- as.data.frame(META_C)
+
+tax_otu_C <- cbind(tax_C, otu_C)
+tax_otu_C$Name <- str_c(tax_otu_C$Kingdom, '_',tax_otu_C$Phylum, '_', tax_otu_C$Class, '_', tax_otu_C$Order, '_', tax_otu_C$Family, '_', tax_otu_C$Genus, '_', tax_otu_C$Species)
+n_distinct(tax_otu_C$Name)
+tax_otu_C[, 234] <- as.character(tax_otu_C[, 234])
+length(unique(tax_otu_C[,234]))
+rownames(tax_otu_C) <- tax_otu_C[,234]
+tax_otu_C <- tax_otu_C[,-c(1:8,234)]
+tax_otu_C <- t(tax_otu_C)
+class(tax_otu_C) <- "numeric"
+tax_otu_C <- as.data.frame(tax_otu_C)
+dist_C <- vegdist(tax_otu_C[, 1:2271],  method = "bray")
+PCOA_C <- pcoa(dist_C)
+vectorPCOA_C <- cbind(PCOA_C$vectors[, 1:2])
+
+# Arrows and taxa name
+env.fit_sp_C <- envfit(vectorPCOA_C, tax_otu_C[,1:2271], perm = 999) #Warning: the standard deviation is zero
+
+env.fit_C.sig  <- as.data.frame(scores(env.fit_sp_C, display = "vectors"))
+env.fit_C.vect <- as.list(env.fit_sp_C$vectors)
+coordinates_C <- cbind(as.data.frame(env.fit_C.vect$arrows*sqrt(env.fit_C.vect$r)), as.data.frame(env.fit_C.vect$pvals))
+coordinates_sign_C <- subset(coordinates_C, as.data.frame(env.fit_C.vect$pvals) <= 0.05)
+coordinates_sign_C <- cbind(coordinates_sign_C, species = rownames(coordinates_sign_C))
+arr_pvals_coord_C <- coordinates_sign_C %>%
+  mutate(Coord = (Axis.1*Axis.1)+(Axis.2*Axis.2))
+arr_pvals_coord_C[,5] <- as.numeric(arr_pvals_coord_C[,5])
+df_envfit_C <- scores(env.fit_sp_C,display=c("vectors"))
+df_envfit_C <- df_envfit_C*vegan:::ordiArrowMul(df_envfit_C)
+
+df_envfit_C <- as.data.frame(df_envfit_C)
+df_envfit_C <- df_envfit_C %>%
+  dplyr::mutate(arrow_length = sqrt(Axis.1^2 + Axis.2^2))
+df_envfit_C$species <- rownames(df_envfit_C)
+df_envfit_C <- df_envfit_C %>%
+  arrange(desc(arrow_length)) %>%
+  slice(1:3)
+rownames(df_envfit_C) = df_envfit_C$species
+df_envfit_C = df_envfit_C[,-3]
+
+df_envfit_C <- df_envfit_C %>% 
+  filter(species %in% coordinates_sign_C$species)
+arrows_names_C <- str_split_fixed(df_envfit_C$species, "_", 7)
+arrows_names_C <- as.data.frame(arrows_names_C)
+arrows_names_C <- arrows_names_C %>%
+  mutate(tax_name = case_when(!str_detect(V7, "Unassigned") ~ V7,
+                              !str_detect(V6, "Unassigned") ~ paste(V6, V7),
+                              !str_detect(V5, "Unassigned") ~ paste(V5, V7),
+                              !str_detect(V4, "Unassigned") ~ paste(V4, V7),
+                              !str_detect(V3, "Unassigned") ~ paste(V3, V7),
+                              str_detect(V3, "Unassigned") ~ paste(V3, V7),
+                              TRUE ~ V7
+                              ))
+df_envfit_C <- df_envfit_C %>% 
+  mutate(tax_name = arrows_names_C$tax_name)
+
+# Plotting
+ft.scores_C <- as.data.frame(vectorPCOA_C)
+ft.scores_C$fastqID <- rownames(tax_otu_C)
+which(rownames(meta_C) != rownames(ft.scores_C))
+
+
+ft.scores_C$classif <- meta_C$classif
+ft.scores_C$howborn <- meta_C$howborn
+ft.scores_C$district_cat <- meta_C$district_cat
+ft.scores_C <- distinct(ft.scores_C)
+
+per_explained_C <- 100*PCOA_C$values$Relative_eig / sum(PCOA_C$values$Relative_eig)
+per_explained_C <- round(per_explained_C[1:2], digits = 1)
+labs_C <- c(glue("Axis1 [{per_explained_C[1]}%]"),
+          glue("Axis2 [{per_explained_C[2]}%]"))
+
+# Define thresholds (10% from edges) to avoid having the labels out of frame
+x_min <- min(df_envfit_C$Axis.1)
+x_max <- max(df_envfit_C$Axis.1)
+y_min <- min(df_envfit_C$Axis.2)
+y_max <- max(df_envfit_C$Axis.2)
+
+df_envfit_C <- df_envfit_C %>%
+  mutate(edge_label = Axis.1 < x_min + 0.1*(x_max-x_min) |
+                       Axis.1 > x_max - 0.1*(x_max-x_min) |
+                       Axis.2 < y_min + 0.1*(y_max-y_min) |
+                       Axis.2 > y_max - 0.1*(y_max-y_min))
+
+
+ggplot() +
+  geom_point(data = ft.scores_C,
+             aes(x = Axis.1, y = Axis.2,
+                 color = howborn, shape = district_cat),
+             size = 3) +
+  scale_color_manual(values = pal_howborn, name = "Mode of delivery") +
+  scale_shape_manual(limits = c("Rural", "Urban"),
+                     values=c(15, 16), name = "District") +
+  geom_segment(aes(x=0, y=0,
+                   xend=df_envfit_C$Axis.1*0.5,
+                   yend=df_envfit_C$Axis.2*0.5),
+               arrow = arrow(length = unit(0.2, "cm")),
+               color="#808080", alpha=0.5) +
+  geom_text_repel(data = df_envfit_C %>% filter(edge_label),
+                  aes(x = Axis.1*0.52, y = Axis.2*0.52, label = tax_name),
+                  size = 3,
+                  color = "#303030",
+                  fontface = 3,
+                  max.overlaps = Inf,
+                  segment.alpha = 0.3
+                  ) +
+  geom_text(data = df_envfit_C %>% filter(!edge_label),
+            aes(x = Axis.1*0.52, y = Axis.2*0.52, label = tax_name),
+            size = 3,
+            color = "#303030",
+            fontface = 3
+            ) +
+  xlab(labs_C[1]) +
+  ylab(labs_C[2]) +
+  theme_bw() +
+  theme(legend.position = "right")
+
+# Permanova
+vegan::adonis2(dist_C ~ district_cat, data = meta_C, permutations = 9999) # howborn + district_cat, by = "margin"
+
+```
+
+## 12.8 Remove unecessary things
+```{r}
+rm(OTU_C, otu_C, TAX_C, tax_C, META_C, meta_C, tax_otu_C, PCOA_C, vectorPCOA_C, env.fit_fam_C, env.fit_sp_C, env.fit_C.sig, env.fit_C.vect, coordinates_C, coordinates_sign_C, arr_pvals_coord_C, arrows_names_C, df_envfit_C, ft.scores_C, per_explained_C, labs_C)
+```
+
+# 13. Children's microbiome differences between classif
+## 13.1 Venn diagrams in function of MUAC
+To see the overlap in microbiome composition between the 3 MUAC nutritional groups. If the taxa is found 1x in each groups, it is considered shared on this plot
+```{r}
+Venn_C = ps_venn(subset_samples(physeq_ra_filt, individual == "Child"),
+                 "classif",
+                 fraction = 0,
+                 weight = TRUE,
+                 relative = FALSE,
+                 plot = TRUE,
+                 quantities = list(type = c("percent", "counts"),
+                                   font = 2),
+                 labels = list(cex = 1.5),
+                 col = "darkgray",
+                 fill = scales::alpha(pal_muac, alpha = 0.7))  # Set alpha for transparency
+
+rm("Venn_C")
+```
+
+## 13.2 ANCOM-BC differential abundances
+```{r}
+library(ANCOMBC)
+
+## Maternal samples from the inclusion visit
+    diffabun_Inc <- subset_samples(phy_abs_sp, Visit == "Inc")
+    diffabun_Inc <- subset_taxa(diffabun_Inc, taxa_sums(diffabun_Inc) > 0)
+    tax_table(diffabun_Inc) <- tax_table(diffabun_Inc)[, -8]
+    
+    tax_df <- as.data.frame(tax_table(diffabun_Inc))
+    tax_df <- tax_df %>%
+      mutate(Species = case_when(
+        !str_detect(Species, "GGB") ~ Species,
+        !str_detect(Genus, "GGB") ~ Species,
+        !str_detect(Family, "FGB") ~ paste(Family, Species),
+        !str_detect(Order, "OFGB") ~ paste(Order, Species),
+        !str_detect(Class, "CFGB") ~ paste(Class, Species),
+        str_detect(Class, "CFGB") ~ paste(Phylum, Species),
+        TRUE ~ Species
+      ))
+    tax_table(diffabun_Inc) <- as.matrix(tax_df)
+    
+    # Trying continuous variable: MUAC mother
+    ancombc_out_Inc_muac <- ancombc(diffabun_Inc,
+                                   formula = "mean_muacm",
+                                   p_adj_method = "BH",
+                                   prv_cut = 0.1,
+                                   tax_level = "Species"
+                                   )
+    
+    res_inc = ancombc_out_Inc_muac$res
+    df_lfc_inc = data.frame(res_inc$lfc[, -1] * res_inc$diff_abn[, -1], check.names = FALSE) %>%
+        mutate(taxon_id = res_inc$diff_abn$taxon) %>%
+        dplyr::select(taxon_id, everything())
+    df_se_inc = data.frame(res_inc$se[, -1] * res_inc$diff_abn[, -1], check.names = FALSE) %>% 
+      mutate(taxon_id = res_inc$diff_abn$taxon) %>%
+        dplyr::select(taxon_id, everything())
+    colnames(df_se_inc)[-1] = paste0(colnames(df_se_inc)[-1], "SE")
+    
+    # Species name
+    diffabun_inc_m <- psmelt(diffabun_Inc) %>%
+      select(OTU, Species) %>%
+      filter(OTU %in% res_inc$diff_abn$taxon[res_inc$diff_abn$mean_muacm]) %>% 
+      dplyr::group_by(OTU, Species) %>%
+      dplyr::summarise()
+    
+    colnames(diffabun_inc_m)[1] <- "taxon_id"
+    
+    df_fig_inc = df_lfc_inc %>% 
+      dplyr::left_join(df_se_inc, by = "taxon_id") %>%
+      dplyr::transmute(taxon_id, mean_muacm, mean_muacmSE) %>%
+      dplyr::filter(mean_muacm != 0) %>% 
+      dplyr::arrange(desc(mean_muacm)) %>%
+      dplyr::mutate(direct = ifelse(mean_muacm > 0, "Positive LFC", "Negative LFC"))
+    df_fig_inc <- inner_join(df_fig_inc, diffabun_inc_m, by="taxon_id")
+    
+    df_fig_inc$Species = factor(df_fig_inc$Species, levels = df_fig_inc$Species)
+    df_fig_inc$direct = factor(df_fig_inc$direct, 
+                            levels = c("Positive LFC", "Negative LFC"))
+    
+    
+    ggplot(data = df_fig_inc, 
+               aes(x = Species, y = mean_muacm, fill = direct, color = direct)) + 
+      geom_bar(stat = "identity", width = 0.7, 
+               position = position_dodge(width = 0.4)) +
+      geom_errorbar(aes(ymin = mean_muacm - mean_muacmSE, ymax = mean_muacm + mean_muacmSE), width = 0.2,
+                    position = position_dodge(0.05), color = "black") + 
+      labs(x = NULL, y = "Log fold change") + 
+      scale_fill_manual(values = c("#93c47d","#e06666"), name=NULL) +
+      scale_color_manual(values = c("#93c47d","#e06666"), name=NULL) +
+      theme_bw() + 
+      theme(plot.title = element_text(hjust = 0.5),
+            panel.grid.minor.y = element_blank(),
+            axis.text.x = element_text(angle = 60, hjust = 1),
+            legend.position = "bottom") +
+      coord_flip()
+
+    res_inc_df <- cbind(res_inc$lfc, res_inc$se, res_inc$p_val, res_inc$q_val)
+    res_inc_df <- res_inc_df[,c(1,3,6,9,12)]
+    colnames(res_inc_df)[2] <- "lfc"
+    colnames(res_inc_df)[3] <- "se"
+    colnames(res_inc_df)[4] <- "pval"
+    colnames(res_inc_df)[5] <- "qval"
+
+## Children samples from the 1wpp - in function of maternal antibiotic 
+    diffabun_ch <- subset_samples(phy_abs_sp, individual == "Child")
+    diffabun_ch <- subset_taxa(diffabun_ch, taxa_sums(diffabun_ch) > 0)
+    tax_table(diffabun_ch) <- tax_table(diffabun_ch)[, -8]
+    
+    tax_df_ch <- as.data.frame(tax_table(diffabun_ch))
+    tax_df_ch <- tax_df_ch %>%
+      mutate(Species = case_when(
+        !str_detect(Species, "GGB") ~ Species,
+        !str_detect(Genus, "GGB") ~ Species,
+        !str_detect(Family, "FGB") ~ paste(Family, Species),
+        !str_detect(Order, "OFGB") ~ paste(Order, Species),
+        !str_detect(Class, "CFGB") ~ paste(Class, Species),
+        str_detect(Class, "CFGB") ~ paste(Phylum, Species),
+        TRUE ~ Species
+      ))
+    tax_table(diffabun_ch) <- as.matrix(tax_df_ch)
+    
+    ancombc_out_ch_ABXm <- ancombc(diffabun_ch,
+                                   formula = "ATB_med_M",
+                                   p_adj_method = "BH",
+                                   prv_cut = 0.1,
+                                   tax_level = "Species"
+                                   )
+    
+    res_ch = ancombc_out_ch_ABXm$res
+    df_lfc_ch = data.frame(res_ch$lfc[, -1] * res_ch$diff_abn[, -1], check.names = FALSE) %>%
+        mutate(taxon_id = res_ch$diff_abn$taxon) %>%
+        dplyr::select(taxon_id, everything())
+    df_se_ch = data.frame(res_ch$se[, -1] * res_ch$diff_abn[, -1], check.names = FALSE) %>% 
+      mutate(taxon_id = res_ch$diff_abn$taxon) %>%
+        dplyr::select(taxon_id, everything())
+    colnames(df_se_ch)[-1] = paste0(colnames(df_se_ch)[-1], "SE")
+    
+    # Species name
+    diffabun_ch_m <- psmelt(diffabun_ch) %>%
+      select(OTU, Species) %>%
+      filter(OTU %in% res_ch$diff_abn$taxon[res_ch$diff_abn$ATB_med_M]) %>%
+      dplyr::group_by(OTU, Species) %>%
+      dplyr::summarise()
+
+## Children samples from the 1wpp - in function of district
+    diffabun_ch <- subset_samples(phy_abs_sp, individual == "Child")
+    diffabun_ch <- subset_taxa(diffabun_ch, taxa_sums(diffabun_ch) > 0)
+    tax_table(diffabun_ch) <- tax_table(diffabun_ch)[, -8]
+    
+    tax_df_ch <- as.data.frame(tax_table(diffabun_ch))
+    tax_df_ch <- tax_df_ch %>%
+      mutate(Species = case_when(
+        !str_detect(Species, "GGB") ~ Species,
+        !str_detect(Genus, "GGB") ~ Species,
+        !str_detect(Family, "FGB") ~ paste(Family, Species),
+        !str_detect(Order, "OFGB") ~ paste(Order, Species),
+        !str_detect(Class, "CFGB") ~ paste(Class, Species),
+        str_detect(Class, "CFGB") ~ paste(Phylum, Species),
+        TRUE ~ Species
+      ))
+    tax_table(diffabun_ch) <- as.matrix(tax_df_ch)
+    
+    ancombc_out_ch_district <- ancombc(diffabun_ch,
+                                       formula = "district_cat",
+                                       p_adj_method = "BH",
+                                       prv_cut = 0.1,
+                                       tax_level = "Species"
+                                       )
+    
+    res_ch = ancombc_out_ch_district$res
+    df_lfc_ch = data.frame(res_ch$lfc[, -1] * res_ch$diff_abn[, -1], check.names = FALSE) %>%
+        mutate(taxon_id = res_ch$diff_abn$taxon) %>%
+        dplyr::select(taxon_id, everything())
+    df_se_ch = data.frame(res_ch$se[, -1] * res_ch$diff_abn[, -1], check.names = FALSE) %>% 
+      mutate(taxon_id = res_ch$diff_abn$taxon) %>%
+        dplyr::select(taxon_id, everything())
+    colnames(df_se_ch)[-1] = paste0(colnames(df_se_ch)[-1], "SE")
+    
+    # Species name
+    diffabun_ch_m <- psmelt(diffabun_ch) %>%
+      select(OTU, Species) %>%
+      filter(OTU %in% res_ch$diff_abn$taxon[res_ch$diff_abn$district_cat]) %>%
+      dplyr::group_by(OTU, Species) %>%
+      dplyr::summarise()
+    
+    colnames(diffabun_ch_m)[1] <- "taxon_id"
+    colnames(res_ch$lfc)
+    
+    contrast_col <- "district_catUrban"
+    contrast_se  <- "district_catUrbanSE"
+    
+    df_fig_ch = df_lfc_ch %>% 
+      dplyr::left_join(df_se_ch, by = "taxon_id") %>%
+      dplyr::transmute(taxon_id,
+                       lfc = .data[[contrast_col]],
+                       lfcSE = .data[[contrast_se]]) %>%
+      dplyr::filter(lfc != 0) %>% 
+      dplyr::arrange(desc(lfc)) %>%
+      dplyr::mutate(direct = ifelse(lfc > 0, "Higher in urban district", "Higher in rural district")
+                    )
+
+## Children samples from the 1wpp - in function of mode of delivery
+    diffabun_ch <- subset_samples(phy_abs_sp, individual == "Child")
+    diffabun_ch <- subset_taxa(diffabun_ch, taxa_sums(diffabun_ch) > 0)
+    tax_table(diffabun_ch) <- tax_table(diffabun_ch)[, -8]
+    
+    tax_df_ch <- as.data.frame(tax_table(diffabun_ch))
+    tax_df_ch <- tax_df_ch %>%
+      mutate(Species = case_when(
+        !str_detect(Species, "GGB") ~ Species,
+        !str_detect(Genus, "GGB") ~ Species,
+        !str_detect(Family, "FGB") ~ paste(Family, Species),
+        !str_detect(Order, "OFGB") ~ paste(Order, Species),
+        !str_detect(Class, "CFGB") ~ paste(Class, Species),
+        str_detect(Class, "CFGB") ~ paste(Phylum, Species),
+        TRUE ~ Species
+      ))
+    tax_table(diffabun_ch) <- as.matrix(tax_df_ch)
+    
+    ancombc_out_ch_howborn <- ancombc(diffabun_ch,
+                                   formula = "howborn_combined",
+                                   p_adj_method = "BH",
+                                   prv_cut = 0.1,
+                                   tax_level = "Species"
+                                   )
+    
+    res_ch = ancombc_out_ch_howborn$res
+    df_lfc_ch = data.frame(res_ch$lfc[, -1] * res_ch$diff_abn[, -1], check.names = FALSE) %>%
+        mutate(taxon_id = res_ch$diff_abn$taxon) %>%
+        dplyr::select(taxon_id, everything())
+    df_se_ch = data.frame(res_ch$se[, -1] * res_ch$diff_abn[, -1], check.names = FALSE) %>% 
+      mutate(taxon_id = res_ch$diff_abn$taxon) %>%
+        dplyr::select(taxon_id, everything())
+    colnames(df_se_ch)[-1] = paste0(colnames(df_se_ch)[-1], "SE")
+    
+    # Species name
+    diffabun_ch_m <- psmelt(diffabun_ch) %>%
+      select(OTU, Species) %>%
+      filter(OTU %in% res_ch$diff_abn$taxon[res_ch$diff_abn$howborn_combined]) %>%
+      dplyr::group_by(OTU, Species) %>%
+      dplyr::summarise()
+    
+    colnames(diffabun_ch_m)[1] <- "taxon_id"
+    colnames(res_ch$lfc)
+    
+    contrast_col <- "howborn_combinedVaginally"
+    contrast_se  <- "howborn_combinedVaginallySE"
+    
+    df_fig_ch = df_lfc_ch %>% 
+      dplyr::left_join(df_se_ch, by = "taxon_id") %>%
+      dplyr::transmute(taxon_id,
+                       lfc = .data[[contrast_col]],
+                       lfcSE = .data[[contrast_se]]) %>%
+      dplyr::filter(lfc != 0) %>% 
+      dplyr::arrange(desc(lfc)) %>%
+      dplyr::mutate(direct = ifelse(lfc > 0, "Higher in vaginal birth", "Higher in C-section")
+                    )
+
+    df_fig_ch <- inner_join(df_fig_ch, diffabun_ch_m, by = "taxon_id")
+    
+    df_fig_ch$Species = factor(df_fig_ch$Species, levels = df_fig_ch$Species)
+    df_fig_ch$direct = factor(df_fig_ch$direct,
+                              levels = c("Higher in vaginal birth", "Higher in C-section"))
+    
+    
+    ggplot(data = df_fig_ch,
+           aes(x = Species, y = lfc, fill = direct, color = direct)) +
+      geom_bar(stat = "identity", width = 0.7, 
+               position = position_dodge(width = 0.4)) +
+      geom_errorbar(aes(ymin = lfc - lfcSE, ymax = lfc + lfcSE), width = 0.2,
+                    position = position_dodge(0.05), color = "black") + 
+      labs(x = NULL, y = "Log fold change (vaginal vs c-section)") + 
+      scale_fill_manual(values = c("#93c47d","#e06666"), name=NULL) +
+      scale_color_manual(values = c("#93c47d","#e06666"), name=NULL) +
+      theme_bw() + 
+      theme(plot.title = element_text(hjust = 0.5),
+            panel.grid.minor.y = element_blank(),
+            axis.text.x = element_text(), # angle = 60, hjust = 1
+            axis.text.y = element_text(size = 12, face = "italic"),
+            legend.position = "bottom") +
+      coord_flip()
+
+    res_ch_df <- cbind(res_ch$lfc, res_ch$se, res_ch$p_val, res_ch$q_val)
+    res_ch_df <- res_ch_df[,c(1,3,6,9,12)]
+    colnames(res_ch_df)[2] <- "lfc"
+    colnames(res_ch_df)[3] <- "se"
+    colnames(res_ch_df)[4] <- "pval"
+    colnames(res_ch_df)[5] <- "qval"
+
+## Children samples from the 1wpp - in function of chicken at home or not
+    diffabun_ch <- subset_samples(phy_abs_sp, individual == "Child")
+    diffabun_ch <- subset_taxa(diffabun_ch, taxa_sums(diffabun_ch) > 0)
+    tax_table(diffabun_ch) <- tax_table(diffabun_ch)[, -8]
+    
+    tax_df_ch <- as.data.frame(tax_table(diffabun_ch))
+    tax_df_ch <- tax_df_ch %>%
+      mutate(Species = case_when(
+        !str_detect(Species, "GGB") ~ Species,
+        !str_detect(Genus, "GGB") ~ Species,
+        !str_detect(Family, "FGB") ~ paste(Family, Species),
+        !str_detect(Order, "OFGB") ~ paste(Order, Species),
+        !str_detect(Class, "CFGB") ~ paste(Class, Species),
+        str_detect(Class, "CFGB") ~ paste(Phylum, Species),
+        TRUE ~ Species
+      ))
+    tax_table(diffabun_ch) <- as.matrix(tax_df_ch)
+    
+    
+    ancombc_out_ch_chicken <- ancombc(diffabun_ch,
+                                   formula = "s86",
+                                   p_adj_method = "BH",
+                                   prv_cut = 0.1,
+                                   tax_level = "Species"
+                                   )
+
+    res_ch = ancombc_out_ch_chicken$res
+    res_ch$res$diff_abn["SGB2103", ] #Klebsiella pneumoniae
+    
+
+    df <- psmelt(phy_abs_sp) %>% 
+      filter(Species == "Klebsiella_pneumoniae") %>%
+      mutate(present = if_else(Abundance > 0, 1, 0))
+    
+    df$s86 <- factor(df$s86, levels = c("No", "Yes"))
+
+    model <- glm(present ~ s86, data = df, family = binomial) # Is presence of Klebsiella pneumoniae associated with variable s86 (Yes/No)?
+    summary(model)
+    exp(cbind(OR = coef(model), confint(model)))
+    
+rm(df, diffabun_ch, tax_df_ch, ancombc_out_ch_chicken, res_ch, model)
+```
+
+# 14. Heat map of the children's microbiome according to the maternal nutritional status
+## 14.1 Create one dataframe per nutritional category with the mean abundance per taxa
+```{r}
+# Normally nourished children (nn)
+  physeq_C_nn_gen <- subset_samples(phy_ra_gen, individual == "Child" & classif == "Normally nourished") # Change here which taxonomic level is wanted
+  # Calculate the prevalence of each taxon
+  prevdf_C_nn_gen = apply(X = otu_table(physeq_C_nn_gen), 
+                        MARGIN = ifelse(taxa_are_rows(physeq_C_nn_gen),
+                                        yes = 1, no = 2), FUN = function(x){sum(x>0)}) 
+  #Create a data frame with prevalence and abundance information
+  prevdf_C_nn_gen = data.frame(Prevalence_Normo = prevdf_C_nn_gen, 
+                             Percentage_Prev_Normo = 100*prevdf_C_nn_gen/90, # 90 samples in this dataset (physeq_gen_rel_nn)
+                             Mean_Abundance_Normo = 100*taxa_sums(physeq_C_nn_gen)/90, # 90 samples in this dataset (physeq_gen_rel_nn) => Average relative abundance of each taxon per sample (%)
+                             Total_Abundance_Normo = taxa_sums(physeq_C_nn_gen),
+                             tax_table(physeq_C_nn_gen)) 
+  prevdf_C_nn_gen <- prevdf_C_nn_gen[, -c(11:12)] #at the genus level
+
+# Overnourished children (on)
+  physeq_C_on_gen <- subset_samples(phy_ra_gen, individual == "Child" & classif == "Overnourished")
+  # Calculate the prevalence of each taxon
+  prevdf_C_on_gen = apply(X = otu_table(physeq_C_on_gen), 
+                            MARGIN = ifelse(taxa_are_rows(physeq_C_on_gen),
+                                            yes = 1, no = 2), FUN = function(x){sum(x>0)}) 
+  #Create a data frame with prevalence and abundance information
+  prevdf_C_on_gen = data.frame(Prevalence_Over = prevdf_C_on_gen, 
+                                 Percentage_Prev_Over = 100*prevdf_C_on_gen/96, # 96 samples in this dataset (physeq_gen_rel_nn)
+                                 Mean_Abundance_Over = 100*taxa_sums(physeq_C_on_gen)/96, # 96 samples in this dataset (physeq_gen_rel_nn)
+                                 Total_Abundance_Over = taxa_sums(physeq_C_on_gen),
+                                 tax_table(physeq_C_on_gen)) 
+  prevdf_C_on_gen <- prevdf_C_on_gen[, -c(11:12)]
+  
+# Undernourished children (un)
+  physeq_C_un_gen <- subset_samples(phy_ra_gen, individual == "Child" & classif == "Undernourished")
+  # Calculate the prevalence of each taxon
+  prevdf_C_un_gen = apply(X = otu_table(physeq_C_un_gen), 
+                            MARGIN = ifelse(taxa_are_rows(physeq_C_un_gen),
+                                            yes = 1, no = 2), FUN = function(x){sum(x>0)}) 
+  #Create a data frame with prevalence and abundance information
+  prevdf_C_un_gen = data.frame(Prevalence_Under = prevdf_C_un_gen, 
+                                 Percentage_Prev_Under = 100*prevdf_C_un_gen/38, # 38 samples in this dataset (physeq_gen_rel_nn)
+                                 Mean_Abundance_Under = 100*taxa_sums(physeq_C_un_gen)/38, # 38 samples in this dataset (physeq_gen_rel_nn)
+                                 Total_Abundance_Under = taxa_sums(physeq_C_un_gen),
+                                 tax_table(physeq_C_un_gen)) 
+  prevdf_C_un_gen <- prevdf_C_un_gen[, -c(11:12)]
+  
+
+# Merge the three dataframes (normo, over and under)
+  prevdf_gen <- cbind(prevdf_C_nn_gen[,c(1:4)], prevdf_C_on_gen[,c(1:4)], prevdf_C_un_gen)
+
+# Remove unwanted objects  
+  rm("prevdf_C_nn_gen", "prevdf_C_on_gen", "prevdf_C_un_gen")
+```
+
+## 14.2 Create categories
+```{r}
+prevdf_gen <- prevdf_gen %>%
+  mutate(Intersect_category = "")
+
+# Low prevalence (< 10% prevalence in all categories and > 0%)
+prevdf_gen$Intersect_category[which(prevdf_gen$Percentage_Prev_Normo < 10 & prevdf_gen$Percentage_Prev_Normo > 0 &
+                                      prevdf_gen$Percentage_Prev_Under < 10 & prevdf_gen$Percentage_Prev_Under > 0 &
+                                      prevdf_gen$Percentage_Prev_Over < 10 & prevdf_gen$Percentage_Prev_Over > 0)
+                              ] <- "Low prevalence (< 10% prevalence in all categories and > 0%)"
+
+# Middle prevalence (between 10% and 74% prevalence) between the 3 groups
+prevdf_gen$Intersect_category[which(prevdf_gen$Percentage_Prev_Normo >= 10 & prevdf_gen$Percentage_Prev_Under >= 10 & prevdf_gen$Percentage_Prev_Over >= 10
+                                    & prevdf_gen$Percentage_Prev_Normo < 75 & prevdf_gen$Percentage_Prev_Under < 75 & prevdf_gen$Percentage_Prev_Over < 75)] <- "Middle prevalence (between 10% and 74% prevalence)"
+
+# High prevalence (between 75% and 99% prevalence) between the 3 groups
+prevdf_gen$Intersect_category[which(prevdf_gen$Percentage_Prev_Normo >= 75 & prevdf_gen$Percentage_Prev_Under >= 75 & prevdf_gen$Percentage_Prev_Over >= 75
+                                    & prevdf_gen$Percentage_Prev_Normo < 100 & prevdf_gen$Percentage_Prev_Under < 100 & prevdf_gen$Percentage_Prev_Over < 102)] <- "High prevalence (between 75% and 99% prevalence)"
+
+# Full prevalence between the 3 groups
+prevdf_gen$Intersect_category[which(prevdf_gen$Percentage_Prev_Normo >= 100 & prevdf_gen$Percentage_Prev_Under >= 100 & prevdf_gen$Percentage_Prev_Over >= 100)] <- "Omnipresent"
+
+table(prevdf_gen$Intersect_category)
+
+# Uniquely Normally nourished
+prevdf_gen$Intersect_category[which(prevdf_gen$Percentage_Prev_Normo > 0
+                                    & prevdf_gen$Percentage_Prev_Under == 0 
+                                    & prevdf_gen$Percentage_Prev_Over == 0)] <- "Uniquely Normally nourished"
+
+# Uniquely Undernourished
+prevdf_gen$Intersect_category[which(prevdf_gen$Percentage_Prev_Under > 0
+                                    & prevdf_gen$Percentage_Prev_Over == 0
+                                    & prevdf_gen$Percentage_Prev_Normo == 0)] <- "Uniquely Undernourished"
+
+# Uniquely Overnourished
+prevdf_gen$Intersect_category[which(prevdf_gen$Percentage_Prev_Over > 0
+                                    & prevdf_gen$Percentage_Prev_Under == 0
+                                    & prevdf_gen$Percentage_Prev_Normo == 0)] <- "Uniquely Overnourished"
+
+table(prevdf_gen$Intersect_category)
+
+# No pattern
+prevdf_gen <- prevdf_gen %>%
+  mutate(Intersect_category = ifelse(Intersect_category == "",
+                                     "No pattern",
+                                     Intersect_category)
+         )
+
+table(prevdf_gen$Intersect_category)
+
+
+# Order the categories
+prevdf_gen$Intersect_category <- as.factor(prevdf_gen$Intersect_category)
+prevdf_gen$Intersect_category <- factor(prevdf_gen$Intersect_category, levels=c("Uniquely Normally nourished", "Uniquely Undernourished", "Uniquely Overnourished",
+                                                                                "Low prevalence (< 10% prevalence in all categories and > 0%)",
+                                                                                "Middle prevalence (between 10% and 74% prevalence)",
+                                                                                "High prevalence (between 75% and 99% prevalence)",
+                                                                                "Omnipresent",
+                                                                                "No pattern"),
+                                        ordered = TRUE)
+
+table(prevdf_gen$Intersect_category)
+
+# Modify taxonomy to add the latest taxonomically assigned taxa
+prevdf_gen <- prevdf_gen %>%
+  mutate(Genus = case_when(!str_detect(Genus, "GGB") ~ Genus,
+                           !str_detect(Family, "FGB") ~ paste(Family, Genus),
+                           !str_detect(Order, "OFGB") ~ paste(Order, Genus),
+                           !str_detect(Class, "CFGB") ~ paste(Class, Genus),
+                           str_detect(Class, "CFGB") ~ paste(Phylum, Genus),
+                           TRUE ~ Genus
+                           ))
+    
+# Identify rows where all three columns are equal to 0 and remove them
+    rows_all_zero <- prevdf_gen[prevdf_gen$Percentage_Prev_Normo == 0 &
+                                  prevdf_gen$Percentage_Prev_Over  == 0 &
+                                  prevdf_gen$Percentage_Prev_Under == 0,
+                                ] # 895 empty taxon
+    
+    cols <- c("Percentage_Prev_Normo", "Percentage_Prev_Over", "Percentage_Prev_Under")
+    prevdf_gen <- prevdf_gen %>%
+      filter(rowSums(across(all_of(cols))) != 0) # 1178 - 895 = 283
+
+table(prevdf_gen$Intersect_category)
+
+# Order the dataframe by Intersect_category
+    prevdf_gen_ordered <- prevdf_gen[order(prevdf_gen$Intersect_category, -prevdf_gen$Percentage_Prev_Normo, prevdf_gen$Percentage_Prev_Over,
+                                           prevdf_gen$Percentage_Prev_Under),]
+    
+    prevdf_gen_hm <- prevdf_gen_ordered # create another one for heat map that will have the modifications
+    rownames(prevdf_gen_hm) <- make.unique(prevdf_gen_hm$Genus)
+      
+# Take only the mean abundances for the 3 categories and transpose the matrix
+    hm_tab <- t(prevdf_gen_hm[,c(3, 7, 11)])
+    rownames(hm_tab)[1] <- "Normally nourished"
+    rownames(hm_tab)[2] <- "Overnourished"
+    rownames(hm_tab)[3] <- "Undernourished"
+```
+
+## 14.3 Construct the heatmap
+```{r}
+# Colors
+range(hm_tab, na.rm = TRUE)
+quantile(unlist(hm_tab), c(0.025, 0.975), na.rm = TRUE)
+
+hm_long <- hm_tab %>%
+  as.data.frame() %>%
+  rownames_to_column("group") %>%
+  pivot_longer(cols = -group,
+               names_to = "Taxon",
+               values_to = "Abundance"
+               ) %>%
+  filter(Abundance > 0)   # remove all zeros (all cases where the taxon is not present in a classif group)
+
+
+#pdf("Hist_prev_sp_C_density.pdf", height = 5, width = 5)
+ggplot(hm_long, aes(x = Abundance, color = group, fill = group)) +
+  geom_density(alpha = 0.3) +
+  scale_x_log10() +
+  scale_color_manual(name = NULL,
+                     values = pal_muac
+                     ) +
+  scale_fill_manual(name = NULL,
+                    values = pal_muac
+                    ) +
+  labs(x = "Mean relative abundance per taxon (log10 scale)",
+       y = "Number of taxa"
+       ) +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        plot.title = element_blank()
+        )
+#dev.off()
+
+comparisons <- list(
+  c("Normally nourished", "Overnourished"),
+  c("Normally nourished", "Undernourished"),
+  c("Overnourished", "Undernourished")
+)
+
+ggplot(hm_long, aes(x = group, y = Abundance, color = group, fill = group)) +
+  geom_boxplot(alpha = 0.3, outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.5, size = 1) +
+  scale_y_log10() +
+  scale_color_manual(name = NULL, values = pal_muac) +
+  scale_fill_manual(name = NULL, values = pal_muac) +
+  labs(x = NULL,
+       y = "Mean relative abundance per taxon (log10 scale)") +
+  theme_bw() +
+  theme(legend.position = "none",
+        plot.title = element_blank()) +
+  ggpubr::stat_compare_means(comparisons = comparisons)
+# ggsave("Mean relative abundance per taxon.pdf", width = 5, height = 5)
+
+col_fun = colorRamp2(c(0, 0.1, 0.25, 0.5, 1, 2, 5, 34),c("white", "#FDE725FF", "#B8DE29FF", "#73D055FF","#20A486FF", "#287D8EFF", "#404788FF", "#440154FF"))
+# col_fun = colorRamp2(c(0,0.01,0.1,1,6,34), c("white","white", "#B8DE29FF", "#29AF7FFF", "#33638DFF", "#440154FF"))
+
+# Side annotations
+row_annot <- rowAnnotation(ls = prevdf_gen_hm$Intersect_category,
+                           col = list(ls=c("Uniquely Normally nourished" = "khaki2",
+                                           "Uniquely Undernourished" = "orange2",
+                                           "Uniquely Overnourished" = "pink2",
+                                           "Low prevalence (< 10% prevalence in all categories and > 0%)" = "indianred3",
+                                           "Omnipresent" = "#440154FF",
+                                           "Middle prevalence (between 10% and 74% prevalence)" = "darkcyan",
+                                           "High prevalence (between 75% and 99% prevalence)" = "lightblue2",
+                                           "No pattern" = "lightgrey")),
+                           annotation_label = "Prevalence", 
+                           annotation_name_side = "top", 
+                           annotation_name_rot = 45)
+    
+# Split the heat map in segments
+table(prevdf_gen_hm$Intersect_category)
+
+split_hm = rep("Uniquely Normally nourished", 283)
+split_hm[49:77] = "Uniquely Undernourished"
+split_hm[78:128] = "Uniquely Overnourished"
+split_hm[129:186] = "Low prevalence (< 10% prevalence in all categories and > 0%)"
+split_hm[187:216] = "Middle prevalence (between 10% and 74% prevalence)" #138:160
+split_hm[217:219] = "High prevalence (between 75% and 99% prevalence)" #161:164
+split_hm[220:220] = "Omnipresent" #165:165
+split_hm[221:283] = "No pattern" #166:224
+split_hm <- as.factor(split_hm)
+split_hm <- factor(split_hm, levels=c("Uniquely Normally nourished", "Uniquely Undernourished", "Uniquely Overnourished",
+                                      "Low prevalence (< 10% prevalence in all categories and > 0%)",
+                                      "Middle prevalence (between 10% and 74% prevalence)",
+                                      "High prevalence (between 75% and 99% prevalence)", 
+                                      "Omnipresent",
+                                      "No pattern",
+                                      ordered = TRUE))
+```
+
+## 14.4 Heatmap
+```{r}
+pdf("Heat_map_C.pdf", height = 40, width = 8)
+heatmap_sharing_t <- Heatmap(t(hm_tab),
+                             name = "Mean relative abundance",
+                             row_split = split_hm,
+                             row_order =  rownames(prevdf_gen_hm),
+                             col = col_fun, 
+                             right_annotation = row_annot,
+                             show_column_dend = FALSE,
+                             row_names_side = "left",
+                             column_names_side = "top",
+                             border = TRUE,
+                             row_title = NULL,
+                             width = unit(25, "mm"),
+                             row_names_gp = gpar(fontsize = 10, fontface = "italic"),
+                             row_names_max_width = unit(7, "cm"))
+heatmap_sharing_t
+dev.off()
+
+```
+
+# 15. Core microbiome of the babies (>75% relative abundance)
+## 15.1 Genus level
+```{r}
+# More than 75% prevalent in all nutritional groups
+prevdf_gen = prevdf_gen %>%
+  mutate(Core = "No")
+
+prevdf_gen$Core[which(prevdf_gen$Percentage_Prev_Normo >= 75 & prevdf_gen$Percentage_Prev_Under >= 75 & prevdf_gen$Percentage_Prev_Over >= 75)] <- "Yes"
+
+table(prevdf_gen$Core)
+
+physeq_C_gen <- subset_samples(phy_ra_gen, individual == "Child")
+
+# Calculate the prevalence of each taxon
+prevdf_C_gen = apply(X = otu_table(physeq_C_gen), 
+                        MARGIN = ifelse(taxa_are_rows(physeq_C_gen),
+                                        yes = 1, no = 2), FUN = function(x){sum(x>0)}) 
+
+
+#Create a data frame with prevalence and abundance information
+prevdf_C_gen = data.frame(Prevalence = prevdf_C_gen,
+                          Percentage_Prev = 100*prevdf_C_gen/225, # 225 children samples
+                          Mean_Abundance = 100*taxa_sums(physeq_C_gen)/225, # 225 children samples
+                          Total_Abundance = taxa_sums(physeq_C_gen),
+                          tax_table(physeq_C_gen)) 
+prevdf_C_gen <- prevdf_C_gen[, -c(11:12)]
+
+prevdf_C_gen = prevdf_C_gen %>%
+  mutate(Core = "No")
+
+prevdf_C_gen$Core[which(prevdf_C_gen$Percentage_Prev >= 75)] <- "Yes"
+
+# Do a Venn diagram of the core microbiome and other species
+prevdf_gen <- prevdf_gen %>%
+  mutate(Venn = "")
+
+# Uniquely Normally nourished
+prevdf_gen$Venn[which(prevdf_gen$Percentage_Prev_Normo > 0
+                      & prevdf_gen$Percentage_Prev_Under == 0
+                      & prevdf_gen$Percentage_Prev_Over == 0)] <- "Normally nourished"
+
+# Uniquely Undernourished
+prevdf_gen$Venn[which(prevdf_gen$Percentage_Prev_Under > 0
+                      & prevdf_gen$Percentage_Prev_Over == 0
+                      & prevdf_gen$Percentage_Prev_Normo == 0)] <- "Undernourished"
+
+# Uniquely Overnourished
+prevdf_gen$Venn[which(prevdf_gen$Percentage_Prev_Over > 0
+                      & prevdf_gen$Percentage_Prev_Under == 0
+                      & prevdf_gen$Percentage_Prev_Normo == 0)] <- "Overnourished"
+
+table(prevdf_gen$Venn)
+
+# Both normally nourished and undernourished
+prevdf_gen$Venn[which(prevdf_gen$Percentage_Prev_Normo > 0
+                      & prevdf_gen$Percentage_Prev_Under > 0
+                      & prevdf_gen$Percentage_Prev_Over == 0)] <- "Normally nourished and Undernourished"
+
+# Both normally nourished and overnourished
+prevdf_gen$Venn[which(prevdf_gen$Percentage_Prev_Normo > 0
+                      & prevdf_gen$Percentage_Prev_Under == 0
+                      & prevdf_gen$Percentage_Prev_Over > 0)] <- "Normally nourished and Overnourished"
+
+# Both undernourished and undernourished
+prevdf_gen$Venn[which(prevdf_gen$Percentage_Prev_Normo == 0
+                      & prevdf_gen$Percentage_Prev_Under > 0
+                      & prevdf_gen$Percentage_Prev_Over > 0)] <- "Undernourished and Overnourished"
+
+table(prevdf_gen$Venn)
+
+# Shared by all
+prevdf_gen$Venn[which(prevdf_gen$Percentage_Prev_Normo > 0
+                      & prevdf_gen$Percentage_Prev_Under > 0
+                      & prevdf_gen$Percentage_Prev_Over > 0)] <- "Normally nourished and Undernourished and Overnourished"
+
+table(prevdf_gen$Venn)
+
+# Create sets
+set_normo <- prevdf_gen$Genus[grep("Normally nourished", prevdf_gen$Venn)]
+set_under <- prevdf_gen$Genus[grep("Undernourished", prevdf_gen$Venn)]
+set_over  <- prevdf_gen$Genus[grep("Overnourished", prevdf_gen$Venn)]
+
+# Venn diagram
+library(VennDiagram)
+
+Venn_core_C <- venn.diagram(x = list("Normally nourished" = set_normo,
+                                     Undernourished = set_under,
+                                     Overnourished = set_over),
+                            filename = NULL,
+                            fill = pal_muac, # c("darkgoldenrod1", "palegreen", "coral1")
+                            alpha = 0.5,
+                            cex = 1.5,
+                            cat.cex = 1.5,
+                            fontfamily = "sans",       # font for numbers
+                            cat.fontfamily = "sans",
+                            lwd = 4,
+                            cat.dist = 0.5
+                            )
+grid::grid.newpage()
+grid::grid.draw(Venn_core_C)
+
+grid::grid.draw(Venn_core_C)
+
+rm("Venn_core_C")
+
+
+# Check the mean, max and min abundance of the core microbiota genera
+core_taxa <- prevdf_gen
+core_taxa <- core_taxa %>%
+  mutate(SGB = rownames(core_taxa))
+core_taxa_v <- core_taxa$SGB[core_taxa$Core == "Yes"]
+
+physeq_C_gen <- subset_samples(phy_ra_gen, individual == "Child")
+
+physeq_core_nn <- prune_taxa(core_taxa_v, physeq_C_nn_gen)
+physeq_core_on <- prune_taxa(core_taxa_v, physeq_C_on_gen)
+physeq_core_un <- prune_taxa(core_taxa_v, physeq_C_un_gen)
+
+mat_nn <- as.data.frame(otu_table(physeq_core_nn))
+mat_on <- as.data.frame(otu_table(physeq_core_on))
+mat_un <- as.data.frame(otu_table(physeq_core_un))
+
+core_stats_nn <- data.frame(
+  taxon = rownames(mat_nn),
+  min_abundance  = apply(mat_nn, 1, function(x) if(any(x>0)) min(x[x > 0]) else NA),
+  max_abundance  = apply(mat_nn, 1, function(x) if(any(x>0)) max(x[x > 0]) else NA),
+  mean_abundance = apply(mat_nn, 1, function(x) if(any(x>0)) mean(x[x > 0]) else NA)
+)
+
+core_stats_on <- data.frame(
+  taxon = rownames(mat_on),
+  min_abundance  = apply(mat_on, 1, function(x) if(any(x>0)) min(x[x > 0]) else NA),
+  max_abundance  = apply(mat_on, 1, function(x) if(any(x>0)) max(x[x > 0]) else NA),
+  mean_abundance = apply(mat_on, 1, function(x) if(any(x>0)) mean(x[x > 0]) else NA)
+)
+
+core_stats_un <- data.frame(
+  taxon = rownames(mat_un),
+  min_abundance  = apply(mat_un, 1, function(x) if(any(x>0)) min(x[x > 0]) else NA),
+  max_abundance  = apply(mat_un, 1, function(x) if(any(x>0)) max(x[x > 0]) else NA),
+  mean_abundance = apply(mat_un, 1, function(x) if(any(x>0)) mean(x[x > 0]) else NA)
+)
+
+core_stats_nn$group <- "Normally nourished"
+core_stats_on$group <- "Overnourished"
+core_stats_un$group <- "Undernourished"
+
+
+core_stats <- bind_rows(
+  core_stats_nn,
+  core_stats_on,
+  core_stats_un
+)
+
+prevdf_gen <- prevdf_gen %>%
+  tibble::rownames_to_column(var = "taxon")
+
+prev_taxa <- prevdf_gen %>%
+  select(taxon, Genus)
+
+core_stats <- core_stats %>%
+  left_join(prev_taxa, by = "taxon")
+
+# Create boxplots
+long_nn <- mat_nn %>%
+  tibble::rownames_to_column("taxon") %>%
+  pivot_longer(-taxon, names_to = "sample", values_to = "abundance") %>%
+  mutate(group = "Normally nourished")
+
+long_on <- mat_on %>%
+  tibble::rownames_to_column("taxon") %>%
+  pivot_longer(-taxon, names_to = "sample", values_to = "abundance") %>%
+  mutate(group = "Overnourished")
+
+long_un <- mat_un %>%
+  tibble::rownames_to_column("taxon") %>%
+  pivot_longer(-taxon, names_to = "sample", values_to = "abundance") %>%
+  mutate(group = "Undernourished")
+
+core_long <- bind_rows(long_nn, long_on, long_un)
+
+core_long <- core_long %>%
+  left_join(prev_taxa, by = "taxon")
+
+# optional: remove zeros if desired
+core_test <- core_long %>% filter(abundance > 0)
+
+# Statistical tests to check whether there is a difference of abundance of the core taxa between classif
+library(rstatix)
+
+stats_results <- core_test %>%
+  group_by(Genus) %>%
+  kruskal_test(abundance ~ group) %>%         # Kruskal–Wallis
+  left_join(core_test %>%                     # add post-hoc Dunn test
+              group_by(Genus) %>%
+              dunn_test(abundance ~ group, p.adjust.method = "BH"),
+            by = "Genus"
+            )
+
+sign_taxa <- stats_results %>% 
+  filter(p.adj < 0.05)
+
+core_long %>%
+  filter(abundance > 0) %>%        # REMOVE ZEROES
+    ggplot(aes(x = Genus, y = abundance, fill = group, color = group)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+    geom_jitter(size = 1, alpha = 0.4, width = 0.2) +
+    scale_fill_manual(values = pal_muac) +
+    scale_color_manual(values = pal_muac) +
+    labs(x = "Genus",
+         y = "Relative abundance",
+         fill = NULL,
+         color = NULL
+         ) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
+          legend.position = "bottom")
+```
+
+## 15.2 Species level
+```{r}
+# Normally nourished children (nn)
+  physeq_C_nn_sp <- subset_samples(phy_ra_sp, individual == "Child" & classif == "Normally nourished") #Change here which taxonomic level is wanted
+  # Calculate the prevalence of each taxon
+  prevdf_C_nn_sp = apply(X = otu_table(physeq_C_nn_sp), 
+                        MARGIN = ifelse(taxa_are_rows(physeq_C_nn_sp),
+                                        yes = 1, no = 2), FUN = function(x){sum(x>0)}) 
+  #Create a data frame with prevalence and abundance information
+  prevdf_C_nn_sp = data.frame(Prevalence_Normo = prevdf_C_nn_sp, 
+                             Percentage_Prev_Normo = 100*prevdf_C_nn_sp/90, # 90 samples in this dataset (physeq_C_nn_sp)
+                             Mean_Abundance_Normo = 100*taxa_sums(physeq_C_nn_sp)/90, # 90 samples in this dataset (physeq_C_nn_sp)
+                             Total_Abundance_Normo = taxa_sums(physeq_C_nn_sp),
+                             tax_table(physeq_C_nn_sp)) 
+  prevdf_C_nn_sp <- prevdf_C_nn_sp[, -12] #at the species level
+
+# Overnourished children (on)
+  physeq_C_on_sp <- subset_samples(phy_ra_sp, individual == "Child" & classif == "Overnourished")
+  # Calculate the prevalence of each taxon
+  prevdf_C_on_sp = apply(X = otu_table(physeq_C_on_sp), 
+                            MARGIN = ifelse(taxa_are_rows(physeq_C_on_sp),
+                                            yes = 1, no = 2), FUN = function(x){sum(x>0)}) 
+  #Create a data frame with prevalence and abundance information
+  prevdf_C_on_sp = data.frame(Prevalence_Over = prevdf_C_on_sp, 
+                                 Percentage_Prev_Over = 100*prevdf_C_on_sp/97, # 97 samples in this dataset (physeq_C_on_sp)
+                                 Mean_Abundance_Over = 100*taxa_sums(physeq_C_on_sp)/97, # 97 samples in this dataset (physeq_C_on_sp)
+                                 Total_Abundance_Over = taxa_sums(physeq_C_on_sp),
+                                 tax_table(physeq_C_on_sp)) 
+  prevdf_C_on_sp <- prevdf_C_on_sp[, -12]
+  
+# Undernourished children (un)
+  physeq_C_un_sp <- subset_samples(phy_ra_sp, individual == "Child" & classif == "Undernourished")
+  # Calculate the prevalence of each taxon
+  prevdf_C_un_sp = apply(X = otu_table(physeq_C_un_sp), 
+                            MARGIN = ifelse(taxa_are_rows(physeq_C_un_sp),
+                                            yes = 1, no = 2), FUN = function(x){sum(x>0)}) 
+  #Create a data frame with prevalence and abundance information
+  prevdf_C_un_sp = data.frame(Prevalence_Under = prevdf_C_un_sp, 
+                                 Percentage_Prev_Under = 100*prevdf_C_un_sp/38, # 38 samples in this dataset (physeq_gen_rel_nn)
+                                 Mean_Abundance_Under = 100*taxa_sums(physeq_C_un_sp)/38, # 38 samples in this dataset (physeq_gen_rel_nn)
+                                 Total_Abundance_Under = taxa_sums(physeq_C_un_sp),
+                                 tax_table(physeq_C_un_sp)) 
+  prevdf_C_un_sp <- prevdf_C_un_sp[, -12]
+  
+
+# Merge the three dataframes (normo, over and under)
+  prevdf_sp <- cbind(prevdf_C_nn_sp[,c(1:4)], prevdf_C_on_sp[,c(1:4)], prevdf_C_un_sp)
+
+# Remove unwanted objects  
+  rm("physeq_C_nn_sp", "prevdf_C_nn_sp", "physeq_C_on_sp", "prevdf_C_on_sp", "physeq_C_un_sp", "prevdf_C_un_sp")
+  
+# More than 75% prevalent in all nutritional groups
+prevdf_sp = prevdf_sp %>%
+  mutate(Core = "No")
+
+prevdf_sp$Core[which(prevdf_sp$Percentage_Prev_Normo >= 75 & prevdf_sp$Percentage_Prev_Under >= 75 & prevdf_sp$Percentage_Prev_Over >= 75)] <- "Yes"
+
+table(prevdf_sp$Core)
+```
+
+## 15.3 Remove unwanted objects
+```{r}
+rm("prevdf_gen", "prevdf_sp", "prevdf_gen_ordered", "prevdf_gen_hm", "hm_tab", "row_annot", "rows_all_zero", "cols", "heatmap_sharing_t", "col_fun", "split_hm", "core_long", "core_stats", "core_stats_nn", "core_stats_on", "core_stats_un", "core_taxa", "core_test", "long_nn", "long_un", "long_on", "mat_nn", "mat_un", "mat_on", "physeq_C_nn_gen", "physeq_C_on_gen", "physeq_C_un_gen", "physeq_core_nn", "physeq_core_un", "physeq_core_on", "prev_taxa", "sign_taxa", "stats_results", "set_normo", "set_over", "set_under", "core_taxa_v")
+```
+
+# 16. Clustering of the children's microbiomes at the species level
+### 16.1 Prep data: get otu_table
+```{r}
+physeq_abs_sp_C <- subset_samples(phy_abs_sp, individual == "Child")
+#physeq_ra_sp_C <- subset_samples(phy_ra_sp, individual == "Child")
+otu_table_sp_C = as.data.frame(otu_table(physeq_abs_sp_C))
+otu_table_sp_C = rev(otu_table_sp_C) #put the first column as C1WST001 and not C1WST269 (mirror horizontally the data frame)
+
+# Get the species names as row names (from tax table)
+otu_table_sp_C$ASV_abs = rownames(otu_table_sp_C)
+otu_table_sp_C = left_join(otu_table_sp_C, tax_names_abs_df, by = "ASV_abs")
+otu_table_sp_C = otu_table_sp_C[,-234] #remove the last column = SGB
+otu_table_sp_C = otu_table_sp_C[,-c(226:232)] #remove the taxonomy columns except "species"
+rownames(otu_table_sp_C) = otu_table_sp_C$Species
+otu_table_sp_C = otu_table_sp_C[, -226] #remove the species column
+otu_table_sp_C = as.data.frame(t(otu_table_sp_C))
+
+# Order species from most abundant to least abundant
+otu_table_sp_C = otu_table_sp_C[,order(colSums(otu_table_sp_C), decreasing = TRUE)]
+
+# Transform in relative abundances
+otu_table_sp_C_ra = apply(otu_table_sp_C, 1, function(x) 100*x/sum(x))
+otu_table_sp_C_ra = as.data.frame(t(otu_table_sp_C_ra))
+
+# Remove unnecessary files
+rm("otu_table_sp_C")
+```
+
+### 16.2 Distance matrix and clustering into 2 clusters
+```{r}
+# Create a distance matrix of samples
+dist_eu_sp_C = vegdist(otu_table_sp_C_ra, method = "euclidean")
+dist_br_sp_C = vegdist(otu_table_sp_C_ra, method = "bray")
+
+# Create clustering (samples 2 by 2)
+hc_eu_sp = hclust(dist_eu_sp_C, method = "ward.D2")
+hc_br_sp = hclust(dist_br_sp_C, method = "ward.D2")
+
+# Create dendrogram (=~ phylogenetic tree)
+dend_eu_sp = as.dendrogram(hc_eu_sp)
+plot(dend_eu_sp)
+dend_br_sp = as.dendrogram(hc_br_sp)
+plot(dend_br_sp)
+
+# Assess where to cut the dendrogram and thus how many clusters is the optimum to highlight the differences 
+# NbClust(data = otu_table_sp_C_ra,
+#         diss = dist_eu_sp_C,
+#         distance = NULL,
+#         min.nc = 2,
+#         max.nc = 10,
+#         method = "ward.D2",
+#         index = "ch")
+#tells you how many clusters are best between 2 and 10 => the best number here is 2
+
+# NbClust(data = otu_table_sp_C_ra,
+#         diss = dist_br_sp_C,
+#         distance = NULL,
+#         min.nc = 2,
+#         max.nc = 10,
+#         method = "ward.D2",
+#         index = "ch")
+#With Bray distance, the optimal nbr of clusters is also 2
+
+# Defines the clusters according to the index calculated above
+nClrs = 2
+clrs_eu_sp = cutree(hc_eu_sp, k=nClrs)
+clrs_br_sp = cutree(hc_br_sp, k=nClrs)
+
+table(clrs_eu_sp)
+table(clrs_br_sp)
+
+clusters_eu_sp = as.data.frame(clrs_eu_sp)
+clusters_eu_sp = clusters_eu_sp %>%
+  mutate(Sample = rownames(clusters_eu_sp)) 
+
+clusters_br_sp = as.data.frame(clrs_br_sp)
+clusters_br_sp = clusters_br_sp %>%
+  mutate(Sample = rownames(clusters_br_sp))
+
+cluster_check = left_join(clusters_eu_sp, clusters_br_sp, by = "Sample")
+cluster_check_diff <- cluster_check %>%
+  filter(clrs_br_sp != clrs_eu_sp)
+#There is only one sample (C1WST094) which changes cluster depending on the distance method (Bray Curtis or euclidean) used. As it does not make a huge difference, I will continue using the euclidean method.
+rm("dist_br_sp_C", "hc_br_sp", "dend_br_sp", "clrs_br_sp", "clusters_br_sp", "cluster_check", "cluster_check_diff")
+  
+clusters_sp = data.frame(cluster = ifelse(test = clrs_eu_sp == 1, yes = "Cluster 1", no = "Cluster 2")) #replace numeric values with string name
+
+# Extract metadata of the phyloseq object and add cluster
+metaHM = as.data.frame(as.matrix(sample_data(physeq_abs_sp_C)))
+clusters_sp$NovogeneID = rownames(clusters_sp)
+metaHM = merge(metaHM, clusters_sp, by = "NovogeneID")
+rownames(metaHM) = metaHM$NovogeneID
+
+#add clusters to phyloseq object
+metadata_df = metadata_df %>%
+    select(-cluster) #remove the currrent "cluster" column in case it was already added
+metadata_df = left_join(metadata_df, clusters_sp, by = "NovogeneID")
+metadata = sample_data(metadata_df) #replace the previous metadata phyloseq with the new one with the column cluster
+rownames(metadata) <- metadata$NovogeneID
+sample_data(phy_abs_sp) <- sample_data(metadata)
+sample_data(physeq_ra_filt) <- sample_data(metadata)
+
+```
+
+### 16.3  Variables explaining the 2 clusters
+```{r}
+  i1_clrs_1 = metadata_df$i1[metadata_df$cluster %in% c("Cluster 1", "Cluster 1")] # get the i1 for which cluster = 1 has been attributed to the child 
+  i1_clrs_2 = metadata_df$i1[metadata_df$cluster %in% c("Cluster 2", "Cluster 2")] # get the i1 for which cluster = 2 has been attributed to the child 
+  
+  metadata_df_clrs <- metadata_df %>%
+    mutate(cluster = case_when(
+      individual == "Mother" & i1 %in% i1_clrs_1 ~ "Cluster 1",
+      individual == "Mother" & i1 %in% i1_clrs_2 ~ "Cluster 2",
+      TRUE ~ cluster  # Keep the original cluster value if no conditions are met
+    ))
+  
+# Gtsummary
+  metadata_df_clrs %>%
+    filter(individual == "Child") %>%
+    filter(Visit == "W1") %>%
+      gtsummary::tbl_summary(
+        include = district_cat, #change here which variable need to be compared / ex: c(all_of(child_symptoms))
+        by = "cluster", #classif, clusters etc (categorie)
+        missing_text = "NA",
+        #missing = "no",
+        statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+      ) %>%
+        add_overall(last = TRUE) %>%
+        add_p() %>%
+        bold_labels()
+  
+```
+
+### 16.4 Heatmap of the 2 clusters and top 20 species
+```{r}
+# Subset the data if necessary (here = top 20)
+  # which(colnames(metaHM) == "howborn") # to check the rank number of the column/variable
+  nCols= 20 #Show only the top 20 species
+  data_matrix <- as.matrix(otu_table_sp_C_ra[, 1:nCols])
+  data_matrix = as.matrix(t(data_matrix))
+
+# Create a row annotation for the clusters
+  col_annot <- HeatmapAnnotation(clrs = metaHM$cluster, hb = metaHM$howborn,
+                                 col = list(clrs = c("Cluster 1" = "skyblue",
+                                                     "Cluster 2" = "lightgreen"),
+                                            hb = c("Vaginally" = "darkgoldenrod2",
+                                                   "Planned cesarian section" = "#FF3333",
+                                                   "Unplanned cesarian section" = "#FF6347")),
+                                 annotation_label = c("Clusters", "Mode of delivery"))
+ 
+# Create heat map with ComplexHeatMap
+  heatmap_clrs_sp_C = Heatmap(data_matrix,
+                              name = "Relative abundance",
+                              col = rev(viridis::inferno(100)), #possible to use the package viridis as well (ex: rev(viridis(100)))
+                              row_title = "Top 20 species",
+                              column_title = "Samples",
+                              top_annotation = col_annot,
+                              cluster_columns = dend_eu_sp,
+                              cluster_rows = FALSE,
+                              column_names_gp = gpar(fontsize = 4, fontface = 4),
+                              row_names_gp = gpar(fontface = "italic"),
+                              show_column_names = TRUE,
+                              column_split = 2, # Number of clusters
+                              heatmap_legend_param = list(legend_direction = "horizontal",
+                                                          legend_width = unit(6, "cm"))
+                                    )
+  
+  pdf("Heatmap_clrs_sp_C.pdf", width = 14, height = 8)
+  draw(heatmap_clrs_sp_C, 
+       heatmap_legend_side="bottom", 
+       annotation_legend_side="bottom"
+       )
+  dev.off()
+```
+
+### 16.5 Visual representation of the 2 clusters (PCoA)
+```{r}
+dist_bc_C_clrs <- phyloseq::distance(subset_samples(physeq_ra_filt, individual == "Child"),
+                                     method = "bray")
+pcoa_br_C_clrs <- ordinate(physeq_ra_filt, "PCoA", dist_bc_C_clrs)
+    
+plot_ordination(physeq_ra_filt, pcoa_br_C_clrs, type = "samples", color = "cluster", title = "PCoA - Bray Curtis - Children") +
+  stat_ellipse(position = "identity") +
+  scale_color_manual(values=c("skyblue", "lightgreen")) +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        plot.title = element_text(size = 20),
+        legend.text = element_text(size = 15,  margin = margin(10,0,00,0)),
+        legend.title = element_text(size = 15, margin = margin(10,0,00,0)), #face="italic"
+        axis.text.x = element_text(size = 15, margin = margin(20,0,10,0)), #margin = top, right, bottom, left
+        axis.text.y = element_text(size = 15, margin = margin(0,10,0,10)),
+        axis.title = element_text(size = 15, face="bold")) +
+  labs(color = "Clusters")
+ggsave("Beta_Br_C_clrs.pdf", height = 7, width = 10)
+```
+
+### 16.6 Explore cluster 1 (="dump" cluster)
+```{r}
+# Subset the otu_table for cluster 1
+metaHM_clrs1 = metaHM %>%
+    filter(cluster == "Cluster 1")
+ID_tokeep = metaHM_clrs1$NovogeneID
+otu_table_sp_C_ra_clrs1 <- otu_table_sp_C_ra[rownames(otu_table_sp_C_ra) %in% ID_tokeep, ]
+
+# Create a distance matrix of samples
+dist_sp_C_clrs1 = dist(otu_table_sp_C_ra_clrs1, method = "euclidean")
+# Create clustering (samples 2 by 2)
+hc_sp_clrs1 = hclust(dist_sp_C_clrs1, method = "ward.D2")
+# Create dendrogram (=~ phylogenetic tree)
+dend_sp_clrs1 = as.dendrogram(hc_sp_clrs1)
+plot(dend_sp_clrs1)
+
+# Assess where to cut the dendrogram and thus how many clusters is the optimum to highlight the differences 
+# NbClust(data = otu_table_sp_C_ra_clrs1, 
+#         diss = dist_sp_C_clrs1, 
+#         distance = NULL, 
+#         min.nc = 2, 
+#         max.nc = 10, 
+#         method = "ward.D2", 
+#         index = "ch") 
+#tells you how many clusters are best between 2 and 10 => the best number here is 2
+
+# Defines the clusters according to the index calculated above
+nClrs = 2
+clrs_sp_clrs1 = cutree(hc_sp_clrs1, k=nClrs)
+  table(clrs_sp_clrs1)
+clusters_sp_clrs1 = as.data.frame(clrs_sp_clrs1)
+clusters_sp_clrs1 = data.frame(cluster1 = ifelse(test = clrs_sp_clrs1 == 1, yes = "Cluster 1.1", no = "Cluster 1.2"))
+
+# Add sub-clusters 1.1 and 1.2 to metadata
+clusters_sp_clrs1$NovogeneID = rownames(clusters_sp_clrs1)
+metaHM_clrs1 = merge(metaHM_clrs1, clusters_sp_clrs1, by = "NovogeneID")
+rownames(metaHM_clrs1) = metaHM_clrs1$NovogeneID
+
+
+# Subset the data if necessary
+  # which(colnames(metaHM) == "howborn")
+  nCols = 20 #Show only the top 20 species
+  data_matrix_clrs1 <- as.matrix(otu_table_sp_C_ra_clrs1[, 1:nCols])
+  data_matrix_clrs1 = as.matrix(t(data_matrix_clrs1))
+
+# Create a row annotation for the clusters
+  col_annot_clrs1 <- HeatmapAnnotation(clrs = metaHM_clrs1$cluster1, hb = metaHM_clrs1$howborn,
+                                       col = list(clrs = c("Cluster 1.1" = "cornflowerblue", 
+                                                           "Cluster 1.2" = "navyblue"),
+                                                  hb = c("Vaginally" = "darkgoldenrod2", 
+                                                         "Planned cesarian section" = "#FF3333", 
+                                                         "Unplanned cesarian section" = "#FF6347")),
+                                       annotation_label = c("Clusters", "Mode of delivery"))
+        
+# Create heat map with ComplexHeatMap
+  heatmap_clrs_sp_C_clrs1 = Heatmap(data_matrix_clrs1,
+                                    name = "Relative abundance",
+                                    col = rev(viridis::inferno(100)), #possible to use the package viridis as well (ex: rev(viridis(100)))
+                                    row_title = "Top 20 species",
+                                    column_title = "Samples",
+                                    top_annotation = col_annot_clrs1,
+                                    cluster_columns = dend_sp_clrs1,
+                                    column_names_gp = gpar(fontsize = 4, fontface = 4),
+                                    row_names_gp = gpar(fontface = "italic"),
+                                    show_column_names = TRUE,
+                                    column_split = 2, # Number of clusters
+                                    heatmap_legend_param = list(legend_direction = "horizontal",
+                                                                legend_width = unit(6, "cm"))
+                                    )
+  
+  draw(heatmap_clrs_sp_C_clrs1, 
+       heatmap_legend_side="bottom", 
+       annotation_legend_side="bottom"
+       )
+  
+  # Export as pdf. I did 18x10 inches but some bacteria names are cut, I can't get them in full
+  # Cluster 1.2 is dominated by Klebsellia pneumonia
+
+# Add sub-clusters 1.1 and 1.2 to metadata_df
+  metadata_df = metadata_df %>%
+    select(-cluster1) #remove the currrent "cluster" column in case it was already added
+  metadata_df = left_join(metadata_df, clusters_sp_clrs1, by = "NovogeneID")
+  metadata_df_clrs = metadata_df_clrs %>%
+    select(-cluster1) #remove the currrent "cluster" column in case it was already added
+  metadata_df_clrs = left_join(metadata_df_clrs, clusters_sp_clrs1, by = "NovogeneID")
+  i1_clrs1_1 = metadata_df_clrs$i1[metadata_df_clrs$cluster1 %in% c("Cluster 1.1", "Cluster 1.1")] # get the i1 for which cluster = 1 has been attributed to the child 
+  i1_clrs1_2 = metadata_df_clrs$i1[metadata_df_clrs$cluster1 %in% c("Cluster 1.2", "Cluster 1.2")] # get the i1 for which cluster = 2 has been attributed to the child 
+  
+  metadata_df_clrs <- metadata_df_clrs %>%
+    mutate(cluster1 = case_when(
+      individual == "Mother" & i1 %in% i1_clrs1_1 ~ "Cluster 1.1",
+      individual == "Mother" & i1 %in% i1_clrs1_2 ~ "Cluster 1.2",
+      TRUE ~ cluster1  # Keep the original cluster value if no conditions are met
+    ))
+  
+```
+
+### 16.7 Correlation between clustering and nutritional groups
+```{r}
+# Check if MUAC classification correlates with clusters
+metadata_df_clrs %>%
+    filter(individual == "Child") %>%
+    filter(Visit == "W1") %>%
+      gtsummary::tbl_summary(
+        include = classif, #change here which variable need to be compared
+        by = "cluster", #classif, clusters etc (categorie)
+        missing_text = "NA",
+        #missing = "no",
+        statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+      ) %>%
+        add_overall(last = TRUE) %>%
+        add_p() %>%
+        bold_labels()
+
+# Check if pre-pregnancy BMI correlates with clusters
+metadata_df_clrs %>%
+    filter(individual == "Child") %>%
+    filter(Visit == "W1") %>%
+      gtsummary::tbl_summary(
+        include = prepregbmi_cat, #change here which variable need to be compared
+        by = "cluster", #classif, clusters etc (categorie)
+        missing_text = "NA",
+        #missing = "no",
+        statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+      ) %>%
+        add_overall(last = TRUE) %>%
+        add_p() %>%
+        bold_labels()
+
+# Check if MUAC classification correlates with clusters dominated by Klebsellia (Cluster 1.1)
+metadata_df_clrs %>%
+    filter(individual == "Child") %>%
+    filter(Visit == "W1") %>%
+      gtsummary::tbl_summary(
+        include = classif, #change here which variable need to be compared
+        by = "cluster1", #classif, clusters etc (categorie)
+        missing_text = "NA",
+        #missing = "no",
+        statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+      ) %>%
+        add_overall(last = TRUE) %>%
+        add_p() %>%
+        bold_labels()
+
+# Check if pre-pregnancy BMI correlates with clusters dominated by Klebsellia (Cluster 1.1)
+metadata_df_clrs %>%
+    filter(individual == "Child") %>%
+    filter(Visit == "W1") %>%
+      gtsummary::tbl_summary(
+        include = prepregbmi_cat, #change here which variable need to be compared
+        by = "cluster1", #classif, clusters etc (categorie)
+        missing_text = "NA",
+        #missing = "no",
+        statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+      ) %>%
+        add_overall(last = TRUE) %>%
+        add_p() %>%
+        bold_labels()
+
+```
+
+## 16.8 Correlation between sub-clustering and antibiotics consumption around birth
+```{r}
+# Check if antibiotic consumption by the mother correlates with clusters
+metadata_df_clrs %>%
+    filter(individual == "Mother") %>%
+    filter(Visit == "W1") %>%
+      gtsummary::tbl_summary(
+        include = ATB_med_M,
+        by = "cluster1", 
+        missing_text = "NA",
+        #missing = "no",
+        statistic = list(all_continuous() ~ "{mean} ({min}-{max})")
+        )%>%
+        add_overall(last = TRUE) %>%
+        add_p() %>%
+        bold_labels()
+```
+
+## 16.9 Clustering into more groups (n=6)
+```{r}
+# Defines the clusters according to the index calculated above
+nClrs = 6
+clrs_sp = cutree(hc_eu_sp, k=nClrs)
+table(clrs_sp)
+
+clusters_sp = as.data.frame(clrs_sp)
+clusters_sp$NovogeneID = rownames(clusters_sp)
+clusters_sp <- clusters_sp %>%
+  mutate(cluster_extend = case_when(clrs_sp == 1 ~ "Cluster 1",
+                             clrs_sp == 2 ~ "Cluster 2",
+                             clrs_sp == 3 ~ "Cluster 3",
+                             clrs_sp == 4 ~ "Cluster 4",
+                             clrs_sp == 5 ~ "Cluster 5",
+                             clrs_sp == 6 ~ "Cluster 6",
+                             TRUE ~ NA_character_
+                             )
+         )
+clusters_sp = clusters_sp[,-1]
+metadata_df = metadata_df %>%
+    select(-cluster_extend) #remove the currrent "cluster" column in case it was already added
+metadata_df = left_join(metadata_df, clusters_sp, by = "NovogeneID")
+
+metadata_df_HM_C = metadata_df %>%
+  filter(individual == "Child") %>%
+  filter(cluster_extend != "")
+
+# Reorder metadata rows to be in the chronological order according to NovogeneID (to match sample_clusters)
+  metadata_df_HM_C <- metadata_df_HM_C %>%
+    arrange(as.numeric(gsub("\\D", "", NovogeneID)))
+  
+# Subset the data if necessary (here = top 20 species)
+  # which(colnames(metaHM) == "howborn") # to check the rank number of the column/variable
+  nCols= 20 #Show only the top 20 species
+  data_matrix <- as.matrix(otu_table_sp_C_ra[, 1:nCols])
+  data_matrix = t(data_matrix)
+  
+# Create a row annotation for the clusters
+  col_annot <- HeatmapAnnotation(clrs = metadata_df_HM_C$cluster_extend, hb = metadata_df_HM_C$howborn,
+                                 col = list(clrs = c("Cluster 1" = "skyblue",
+                                                     "Cluster 2" = "#FFB347",
+                                                     "Cluster 3" = "lightgreen",
+                                                     "Cluster 4" = "#FF9F9B",
+                                                     "Cluster 5" = "#D0BBFF",
+                                                     "Cluster 6" = "#FDFD96"),
+                                            hb = c("Vaginally" = "darkgoldenrod2",
+                                                   "Planned cesarian section" = "#FF3333",
+                                                   "Unplanned cesarian section" = "#FF6347")),
+                                 annotation_label = c("Clusters", "Mode of delivery"))
+
+  sample_clusters <- clusters_sp$cluster_extend
+  sample_clusters <- factor(sample_clusters,
+                            levels = c("Cluster 1", "Cluster 2", "Cluster 3",
+                                       "Cluster 4", "Cluster 5", "Cluster 6"))
+
+# Create heat map with ComplexHeatMap
+  heatmap_clrs_sp_C = Heatmap(data_matrix,
+                              name = "Relative abundance",
+                              col = rev(viridis::inferno(100)), #possible to use the package viridis as well (ex: rev(viridis(100)))
+                              row_title = "Top 20 most abundant species",
+                              column_title = "Samples",
+                              column_title_side = "top",
+                              top_annotation = col_annot,
+                              cluster_columns = dend_eu_sp,
+                              cluster_rows = FALSE,
+                              column_names_gp = gpar(fontsize = 4, fontface = 4),
+                              row_names_gp = gpar(fontface = "italic"),
+                              show_column_names = FALSE,
+                              column_split = 6, # Number of clusters
+                              heatmap_legend_param = list(legend_direction = "horizontal",
+                                                          legend_width = unit(6, "cm"))
+                                    )
+  
+  pdf("heatmap_clrs6_sp_C.pdf", width = 8, height = 8)
+  draw(heatmap_clrs_sp_C, 
+       heatmap_legend_side="bottom", 
+       annotation_legend_side="bottom",
+       padding = unit(c(6, 6, 6, 20), "mm"))
+  dev.off()
+```
+
+## 16.10 Variables explaining the 6 clusters
+```{r}
+table(metadata_df$cluster_extend)
+
+# I need to copy the cluster group info of the child to his/her mother on both preg and 1wpp lines, to be able to do the gtsummary of maternal variables.
+  i1_clrs_1 = metadata_df$i1[metadata_df$cluster_extend %in% c("Cluster 1", "Cluster 1")] # get the i1 for which cluster = 1 has been attributed to the child 
+  i1_clrs_2 = metadata_df$i1[metadata_df$cluster_extend %in% c("Cluster 2", "Cluster 2")] # get the i1 for which cluster = 2 has been attributed to the child 
+  i1_clrs_3 = metadata_df$i1[metadata_df$cluster_extend %in% c("Cluster 3", "Cluster 3")] # get the i1 for which cluster = 3 has been attributed to the child 
+  i1_clrs_4 = metadata_df$i1[metadata_df$cluster_extend %in% c("Cluster 4", "Cluster 4")] # get the i1 for which cluster = 4 has been attributed to the child 
+  i1_clrs_5 = metadata_df$i1[metadata_df$cluster_extend %in% c("Cluster 5", "Cluster 5")] # get the i1 for which cluster = 5 has been attributed to the child 
+  i1_clrs_6 = metadata_df$i1[metadata_df$cluster_extend %in% c("Cluster 6", "Cluster 6")] # get the i1 for which cluster = 6 has been attributed to the child 
+
+  metadata_df_clrs <- metadata_df %>%
+    mutate(cluster_extend = case_when(individual == "Mother" & i1 %in% i1_clrs_1 ~ "Cluster 1",
+                                      individual == "Mother" & i1 %in% i1_clrs_2 ~ "Cluster 2",
+                                      individual == "Mother" & i1 %in% i1_clrs_3 ~ "Cluster 3",
+                                      individual == "Mother" & i1 %in% i1_clrs_4 ~ "Cluster 4",
+                                      individual == "Mother" & i1 %in% i1_clrs_5 ~ "Cluster 5",
+                                      individual == "Mother" & i1 %in% i1_clrs_6 ~ "Cluster 6",
+                                      TRUE ~ cluster_extend  # Keep the original cluster value if no conditions are met
+                                      ))
+  
+  table(metadata_df_clrs$cluster_extend)
+  
+# I need to create one variables (yes/no) per cluster to be able to do chi2/Fisher tests with gtsummary, otherwise nothing will be significant (comparing 2 distributions instead of a chi2 table is not great)
+ metadata_df_clrs <- metadata_df_clrs %>%
+   mutate(cluster1 = if_else(cluster_extend == "Cluster 1", "Yes", "No"),
+          cluster2 = if_else(cluster_extend == "Cluster 2", "Yes", "No"),
+          cluster3 = if_else(cluster_extend == "Cluster 3", "Yes", "No"),
+          cluster4 = if_else(cluster_extend == "Cluster 4", "Yes", "No"),
+          cluster5 = if_else(cluster_extend == "Cluster 5", "Yes", "No"),
+          cluster6 = if_else(cluster_extend == "Cluster 6", "Yes", "No")
+          )
+  
+ table(metadata_df_clrs$cluster1)
+ 
+# Gtsummary
+  metadata_df_clrs %>%
+    filter(individual == "Child") %>%
+    filter(Visit == "W1") %>%
+      gtsummary::tbl_summary(
+        include = c(agechild), #, lddm, age, twin, prepregbmi_cat, bf2, obc, s90, s91c, district_cat, howborn_combined
+        by = "cluster1",
+        missing_text = "NA",
+        missing = "no",
+        type = list(all_categorical() ~ "categorical"),
+        statistic = list(all_continuous() ~ "{mean} ({min}-{max})",
+                         all_categorical() ~ "{n} ({p}%)"  # show counts for all levels
+                         )
+        ) %>%
+          add_overall(last = TRUE) %>%
+          add_p() %>%
+          bold_labels()
+```
+
+## 16.11 Clustering of the maternal stool microbiome and correlation with babies clustering
+```{r}
+physeq_abs_sp_M <- subset_samples(phy_abs_sp, individual == "Mother" & Visit == "Inc")
+#physeq_ra_sp_M <- subset_samples(phy_ra_sp, individual == "Mother")
+otu_table_sp_M = as.data.frame(otu_table(physeq_abs_sp_M))
+otu_table_sp_M = rev(otu_table_sp_M) #put the first column as MPST001 and not MPST269 (mirror horizontally the data frame)
+
+# Get the species names as row names (from tax table)
+otu_table_sp_M$ASV_abs = rownames(otu_table_sp_M)
+otu_table_sp_M = left_join(otu_table_sp_M, tax_names_abs_df, by = "ASV_abs")
+otu_table_sp_M = otu_table_sp_M[,-254] #remove the last column = SGB
+otu_table_sp_M = otu_table_sp_M[,-c(246:252)] #remove the taxonomy columns except "species"
+rownames(otu_table_sp_M) = otu_table_sp_M$Species
+otu_table_sp_M = otu_table_sp_M[, -246] #remove the species column
+otu_table_sp_M = as.data.frame(t(otu_table_sp_M))
+
+# Order species from most abundant to least abundant
+otu_table_sp_M = otu_table_sp_M[,order(colSums(otu_table_sp_M), decreasing = TRUE)]
+
+# Transform in relative abundances
+otu_table_sp_M_ra = apply(otu_table_sp_M, 1, function(x) 100*x/sum(x))
+otu_table_sp_M_ra = as.data.frame(t(otu_table_sp_M_ra))
+
+# Remove unnecessary files
+rm("otu_table_sp_M")
+
+
+# Distance matrix and clustering into x clusters
+# Create a distance matrix of samples
+dist_eu_sp_M = vegdist(otu_table_sp_M_ra, method = "euclidean")
+
+# Create clustering (samples 2 by 2)
+hc_eu_sp_M = hclust(dist_eu_sp_M, method = "ward.D2")
+
+# Create dendrogram (=~ phylogenetic tree)
+dend_eu_sp_M = as.dendrogram(hc_eu_sp_M)
+plot(dend_eu_sp_M)
+
+# Assess where to cut the dendrogram and thus how many clusters is the optimum to highlight the differences 
+# NbClust(data = otu_table_sp_M_ra,
+#         diss = dist_eu_sp_M,
+#         distance = NULL,
+#         min.nc = 2,
+#         max.nc = 10,
+#         method = "ward.D2",
+#         index = "ch")
+# tells you how many clusters are best between 2 and 10 => the best number here is 2
+
+# Defines the clusters according to the index calculated above
+nClrs = 2
+clrs_eu_sp_M = cutree(hc_eu_sp_M, k=nClrs)
+
+table(clrs_eu_sp_M)
+
+clusters_eu_sp_M = as.data.frame(clrs_eu_sp_M)
+clusters_eu_sp_M = clusters_eu_sp_M %>%
+  mutate(Sample = rownames(clusters_eu_sp_M)) 
+  
+clusters_sp_M = data.frame(cluster_M = ifelse(test = clrs_eu_sp_M == 1, yes = "Cluster 1", no = "Cluster 2")) #replace numeric values with string name
+
+# Extract metadata of the phyloseq object and add cluster
+metaHM = as.data.frame(as.matrix(sample_data(physeq_abs_sp_M)))
+clusters_sp_M$NovogeneID = rownames(clusters_sp_M)
+metaHM = merge(metaHM, clusters_sp_M, by = "NovogeneID")
+rownames(metaHM) = metaHM$NovogeneID
+
+# Add clusters to phyloseq object
+metadata_df = metadata_df %>%
+    select(-cluster_M) #remove the currrent "cluster_M" column in case it was already added
+metadata_df = left_join(metadata_df, clusters_sp_M, by = "NovogeneID")
+metadata = sample_data(metadata_df) #replace the previous metadata phyloseq with the new one with the column cluster
+rownames(metadata) <- metadata$NovogeneID
+sample_data(phy_abs_sp) <- sample_data(metadata)
+sample_data(physeq_ra_filt) <- sample_data(metadata)
+
+
+# Test the association between the maternal clustering and the children clustering
+cluster_ass = metadata_df %>%
+  select(individual, Visit, VG_ID, cluster, cluster_M, cluster_extend) %>%
+  filter(!(individual == "Mother" & Visit == "W1"))
+
+cluster_child <- cluster_ass %>%
+  filter(individual == "Child") %>%
+  select(VG_ID, cluster, cluster_extend)
+
+cluster_mother <- cluster_ass %>%
+  filter(individual == "Mother") %>%
+  select(VG_ID, cluster_M)
+
+cluster_final <- cluster_child %>%
+  left_join(cluster_mother, by = "VG_ID") %>%
+  select(VG_ID, cluster, cluster_M, cluster_extend)
+
+
+table(cluster_final$cluster, cluster_final$cluster_M)
+
+chisq.test(table(cluster_final$cluster, cluster_final$cluster_M)) 
+fisher.test(table(cluster_final$cluster, cluster_final$cluster_M)) 
+
+# For extended clusters
+tab <- table(cluster_final$cluster_M, cluster_final$cluster_extend)
+tab
+fisher.test(tab)
+chisq.test(tab)
+```
+
+## 16.12 Remove unnecessary files
+```{r}
+# From distance matrix and clustering
+rm("physeq_abs_sp_C", "hc_sp", "clrs_sp", "clusters_eu_sp", "dend_eu_sp", "hc_eu_sp", "dist_eu_sp_C", "clrs_eu_sp")
+
+# From Variables explaining clustering
+rm("clusters_sp", "i1_clrs_1", "i1_clrs_2")
+
+# From Heatmap with clustering
+rm("dend_sp", "nCols", "data_matrix", "col_annot", "hm_long")
+
+# From Explore cluster 1
+rm("otu_table_sp_C_ra", "metaHM_clrs1", "ID_tokeep", "otu_table_sp_C_ra_clrs1", "dist_sp_C_clrs1", "hc_sp_clrs1", "dend_sp_clrs1", "clrs_sp_clrs1", "clusters_sp_clrs1", "data_matrix_clrs1", "col_annot_clrs1", "heatmap_clrs_sp_C_clrs1", "i1_clrs1_1", "i1_clrs1_2")
+
+# From Correlation between clustering and nutritional groups
+rm("metadata_df_clrs")
+
+# From Variables explaining the 6 clusters
+rm("i1_clrs_1", "i1_clrs_2", "i1_clrs_3", "i1_clrs_4", "i1_clrs_5", "i1_clrs_6", "metadata", "metadata_df_HM_C", "sample_clusters")
+
+# From maternal clustering
+rm("cluster_ass", "cluster_child", "cluster_mother", "cluster_final", "clusters_eu_sp_M", "clusters_sp_M", "dend_eu_sp_M", "hc_eu_sp_M", "otu_table_sp_M", "tab", "dist_eu_sp_M", "clrs_eu_sp_M")
+
+```
+
+# 17. Heatmap of the children's microbiome according to the mode of delivery
+```{r}
+# Subset the data if necessary (here = top 20)
+  # which(colnames(metaHM) == "howborn") # to check the rank number of the column/variable
+  nCols= 20 #Show only the top 20 species
+  data_matrix <- as.matrix(otu_table_sp_C_ra[, 1:nCols])
+  data_matrix = as.matrix(t(data_matrix))
+
+# Create a row annotation for the clusters
+  col_annot <- HeatmapAnnotation(hb = metaHM$howborn,
+                                 col = list(hb = c("Vaginally" = "darkgoldenrod2",
+                                                   "Planned cesarian section" = "#FF3333",
+                                                   "Unplanned cesarian section" = "#FF6347")),
+                                 annotation_label = c("Mode of delivery"))
+ 
+# Create heat map with ComplexHeatMap
+  heatmap_hb_sp_C = Heatmap(data_matrix,
+                              name = "Relative abundance",
+                              col = rev(viridis::inferno(100)), #possible to use the package viridis as well (ex: rev(viridis(100)))
+                              row_title = "Top 20 species",
+                              column_title = "Samples",
+                              top_annotation = col_annot,
+                              #cluster_columns = dend_sp,
+                              column_names_gp = gpar(fontsize = 4, fontface = 4),
+                              row_names_gp = gpar(fontface = "italic"),
+                              show_column_names = TRUE,
+                              column_split = 3, # Number of variables in howborn
+                              heatmap_legend_param = list(legend_direction = "horizontal",
+                                                          legend_width = unit(6, "cm"))
+                                    )
+  draw(heatmap_hb_sp_C, 
+       heatmap_legend_side="bottom", 
+       annotation_legend_side="bottom"
+       )
+# Remove unnecessary objects
+  rm("metaHM")
+```
+
+# 18. Permanova on distance matrix
+## 18.1 Represent (with boxplots) the distance differences between the samples of different mode of delivery
+```{r}
+# Convert the distance matrix to a long format data frame
+dist_eu_sp_C_m = as.matrix(dist_eu_sp_C)
+dist_eu_sp_C_df <- as.data.frame(as.table(dist_eu_sp_C_m)) #50625 rows
+# Remove the diagonal and duplicate entries
+dist_eu_sp_C_df <- dist_eu_sp_C_df[dist_eu_sp_C_df$Var1 != dist_eu_sp_C_df$Var2, ] #50400 rows
+# Create a consistent identifier for each pair of samples
+dist_eu_sp_C_df$id <- apply(dist_eu_sp_C_df, 1, function(row) {
+  paste(sort(c(row["Var1"], row["Var2"])), collapse = "_")
+})
+# Remove duplicates based on the identifier
+dist_eu_sp_C_df <- dist_eu_sp_C_df[!duplicated(dist_eu_sp_C_df$id), ] #25200
+# Drop the identifier column
+dist_eu_sp_C_df$id <- NULL
+
+# Extract howborn variable from metadata and merge it to the distance dataframe
+howborn_df <- metadata_df %>%
+  filter(individual == "Child") %>%
+  select(NovogeneID, howborn_combined)
+
+dist_eu_sp_C_df = dist_eu_sp_C_df %>%
+  dplyr::rename("NovogeneID" = "Var1")
+
+dist_eu_sp_C_df = left_join(dist_eu_sp_C_df, howborn_df, by = "NovogeneID")
+
+dist_eu_sp_C_df = dist_eu_sp_C_df %>%
+  dplyr::rename(howborn1 = howborn_combined,
+                NovogeneID1 = NovogeneID,
+                NovogeneID = Var2)
+
+dist_eu_sp_C_df = left_join(dist_eu_sp_C_df, howborn_df, by = "NovogeneID")
+
+dist_eu_sp_C_df = dist_eu_sp_C_df %>%
+  dplyr::rename(howborn2 = howborn_combined,
+                NovogeneID2 = NovogeneID)
+
+# Add a new column for the combined group
+dist_eu_sp_C_df$howborn_comb = NA
+dist_eu_sp_C_df$howborn_comb <- ifelse(dist_eu_sp_C_df$howborn1 == dist_eu_sp_C_df$howborn2, dist_eu_sp_C_df$howborn1, "Combined")
+
+# Ensure that 'howborn_comb' is a factor with the desired levels
+dist_eu_sp_C_df$howborn_comb <- factor(dist_eu_sp_C_df$howborn_comb, 
+                                        levels = c("Combined", "C-section", "Vaginally"))
+
+# Create the boxplot
+Howborn_bp <- ggplot(dist_eu_sp_C_df, aes(x = howborn_comb, y = Freq, color = howborn_comb)) +
+                    geom_boxplot() +
+                    theme_bw() +
+                    scale_color_manual(values = c("#666666", "#FF6347", "darkgoldenrod2")) +
+                    theme(legend.position = "none") +
+                    labs(title = "Boxplot of Distances Grouped by Mode of Delivery", 
+                         x = "Mode of Delivery", 
+                         y = "Distance")
+    
+rm("howborn_df", "dist_eu_sp_C_df", "combined_df")
+```
+
+## 18.2 Permanova
+```{r}
+metadata_df_perm = metadata_df %>%
+  filter(individual == "Child") %>%
+  #filter(!is.na(howborn_combined)) %>%
+  filter(!is.na(Shannon)) 
+
+# otu_table that we'll use: otu_table_sp_C_ra
+set.seed(546)
+perm_howborn_combined = vegan::adonis2(dist_eu_sp_C_m ~ howborn_combined, data = metadata_df_perm, permutations = 999, method = "euclidean")
+perm_district_cat = vegan::adonis2(dist_eu_sp_C_m ~ district_cat, data = metadata_df_perm, permutations = 999, method = "euclidean")
+perm_antibio = vegan::adonis2(dist_eu_sp_C_m ~ ATB_med_M, data = metadata_df_perm, permutations = 999, method = "euclidean")
+
+```
+
+# 19. Exploration of the bifidobacterium co-exclusion
+```{r}
+# Subset the dataset for bifidobacterium in children samples. Remove samples which do not contain any bifido
+bifido_ra_sp = abun_table_ra_df %>%
+  filter(Genus == "Bifidobacterium") %>%
+  select(-starts_with("M")) %>%
+  select(where(~ !all(.x == 0))) 
+
+# Remove "Bifidobacterium" from Species name to have a cleaner graph later
+bifido_ra_sp <- bifido_ra_sp %>%
+  mutate(Species = str_replace(Species, "^Bifidobacterium_", "B. "),
+         Species = str_replace(Species, "_", " ")
+         ) %>%
+  column_to_rownames("Species")
+
+# Keep only the abundances
+bifido_ra <- bifido_ra_sp %>% 
+  select(where(is.numeric)) %>%
+  filter(rowSums(select(., where(is.numeric))) > 0) # remove the species row if it is not present in any children's sample
+
+bifido_ra_t <- t(bifido_ra)
+
+# Test for correlation
+cor_mat <- cor(bifido_ra_t, method = "spearman") #Spearman → best for microbiome (non-normal, zeros)
+
+library(corrplot)
+rcorr_res <- Hmisc::rcorr(as.matrix(bifido_ra_t), type = "spearman")
+
+cor_mat  <- rcorr_res$r
+p_mat    <- rcorr_res$P
+
+corrplot(cor_mat, 
+         p.mat = p_mat, 
+         sig.level = 0.05,
+         type = "upper",
+         method = "circle",
+         tl.col = "black",
+         addCoef.col = "black",
+         number.cex = .5,
+         diag = FALSE)
+
+# Identify co-exclusion
+co_exclusion <- cor_mat %>%
+  as.data.frame() %>%
+  rownames_to_column("Species1") %>%
+  pivot_longer(-Species1, names_to = "Species2", values_to = "rho") %>%
+  filter(Species1 < Species2) %>%   # avoid duplicates
+  filter(rho < -0.5) # can change the threshold here
+
+# Do correlation plots (linear regression) for both co-exclusions 
+sp1 <- "B. pseudocatenulatum"
+sp2 <- "B. longum"
+sp3 <- "B. breve"
+
+df_cor <- bifido_ra[c(sp1, sp3), ] %>%
+  t() %>%                     # transpose → samples as rows
+  as.data.frame() %>%
+  tibble::rownames_to_column("Sample")
+
+cor_test <- cor.test(
+  df_cor[[sp1]],
+  df_cor[[sp3]],
+  method = "spearman"
+)
+
+ggplot(df_cor, aes(x = .data[[sp1]], y = .data[[sp3]])) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_smooth(method = "lm", color = "red", fill = "red", alpha = 0.2) +
+  stat_cor(method = "spearman",
+           label.x.npc = "left",
+           label.y.npc = "top") +
+  theme_bw() +
+  labs(x = sp1,
+       y = sp3) +
+  theme(axis.title = element_text(face = "italic"))
+
+
+df_cor <- bifido_ra[c(sp3, sp2), ] %>%
+  t() %>%                     # transpose → samples as rows
+  as.data.frame() %>%
+  tibble::rownames_to_column("Sample")
+
+cor_test <- cor.test(
+  df_cor[[sp3]],
+  df_cor[[sp2]],
+  method = "spearman"
+)
+
+ggplot(df_cor, aes(x = .data[[sp3]], y = .data[[sp2]])) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_smooth(method = "lm", color = "red", fill = "red", alpha = 0.2) +
+  stat_cor(method = "spearman",
+           label.x.npc = "left",
+           label.y.npc = "top") +
+  theme_bw() +
+  labs(x = sp3,
+       y = sp2) +
+  theme(axis.title = element_text(face = "italic"))
+
+# Check what happen if we only select the vaginally born or the c-section ones
+# vaginal
+metadata_bifido = metadata_df %>%
+  filter(individual == "Child") %>%
+  filter(howborn_combined == "Vaginally") %>%
+  dplyr::select(NovogeneID, howborn, howborn_combined) 
+
+tax_cols <- c("Kingdom","Phylum","Class","Order","Family","Genus","Species","SGB")
+cols_to_keep <- colnames(bifido_ra_sp) %in% c(metadata_bifido$NovogeneID, tax_cols)
+bifido_filtered <- bifido_ra_sp[, cols_to_keep]
+
+# Remove "Bifidobacterium" from Species name to have a cleaner graph later
+bifido_ra_sp <- bifido_filtered %>%
+  mutate(Species = str_replace(Species, "^Bifidobacterium_", "B. "),
+         Species = str_replace(Species, "_", " ")
+         ) %>%
+  column_to_rownames("Species")
+
+# Keep only the abundances
+bifido_ra <- bifido_ra_sp %>% 
+  select(where(is.numeric)) %>%
+  filter(rowSums(select(., where(is.numeric))) > 0) # remove the species row if it is not present in any children's sample
+
+bifido_ra_t <- t(bifido_ra)
+
+# Test for correlation
+cor_mat <- cor(bifido_ra_t, method = "spearman") #Spearman → best for microbiome (non-normal, zeros)
+
+library(corrplot)
+rcorr_res <- Hmisc::rcorr(as.matrix(bifido_ra_t), type = "spearman")
+
+cor_mat  <- rcorr_res$r
+p_mat    <- rcorr_res$P
+
+corrplot(cor_mat, 
+         p.mat = p_mat, 
+         sig.level = 0.05,
+         type = "upper",
+         method = "circle",
+         tl.col = "black",
+         addCoef.col = "black",
+         number.cex = .5,
+         diag = FALSE)
+
+# Identify co-exclusion
+co_exclusion <- cor_mat %>%
+  as.data.frame() %>%
+  rownames_to_column("Species1") %>%
+  pivot_longer(-Species1, names_to = "Species2", values_to = "rho") %>%
+  filter(Species1 < Species2) %>%   # avoid duplicates
+  filter(rho < -0.5) # can change the threshold here
+
+# Do correlation plots (linear regression) for both co-exclusions 
+sp1 <- "B. pseudocatenulatum"
+sp2 <- "B. longum"
+sp3 <- "B. breve"
+
+df_cor <- bifido_ra[c(sp1, sp3), ] %>%
+  t() %>%                     # transpose → samples as rows
+  as.data.frame() %>%
+  tibble::rownames_to_column("Sample")
+
+cor_test <- cor.test(
+  df_cor[[sp1]],
+  df_cor[[sp3]],
+  method = "spearman"
+)
+
+ggplot(df_cor, aes(x = .data[[sp1]], y = .data[[sp3]])) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_smooth(method = "lm", color = "red", fill = "red", alpha = 0.2) +
+  stat_cor(method = "spearman",
+           label.x.npc = "left",
+           label.y.npc = "top") +
+  theme_bw() +
+  labs(x = sp1,
+       y = sp3) +
+  theme(axis.title = element_text(face = "italic"))
+
+
+df_cor <- bifido_ra[c(sp3, sp2), ] %>%
+  t() %>%                     # transpose → samples as rows
+  as.data.frame() %>%
+  tibble::rownames_to_column("Sample")
+
+cor_test <- cor.test(
+  df_cor[[sp3]],
+  df_cor[[sp2]],
+  method = "spearman"
+)
+
+ggplot(df_cor, aes(x = .data[[sp3]], y = .data[[sp2]])) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_smooth(method = "lm", color = "red", fill = "red", alpha = 0.2) +
+  stat_cor(method = "spearman",
+           label.x.npc = "left",
+           label.y.npc = "top") +
+  theme_bw() +
+  labs(x = sp3,
+       y = sp2) +
+  theme(axis.title = element_text(face = "italic"))
+
+
+rm("bifido_ra_sp", "bifido_ra", "bifido_ra_t", "cor_mat", "co_exclusion", "rcorr_res", "p_mat", "df_cor", "cor_test", "metadata_bifido", "cols_to_keep", "bifido_filtered", "tax_cols")
+```
+
+# 20. Exploration of B.fragilis and bifidobacterium co-exclusion
+```{r}
+# Subset the dataset for bifidobacterium in children samples. Remove samples which do not contain any bifido
+bifido_bact_ra_sp = abun_table_ra_df %>%
+  filter(Genus == "Bifidobacterium" | Species == "Bacteroides_fragilis") %>%
+  select(-starts_with("M")) %>%
+  select(where(~ !all(.x == 0)))
+
+bifido_bact_ra_sp <- bifido_bact_ra_sp %>%
+  mutate(Species = case_when(str_detect(Species, "Bacteroides_fragilis") ~ paste0(Species, "_", SGB),
+    TRUE ~ Species
+  )) %>%
+  mutate(Species = str_replace(Species, "^Bifidobacterium_", "B. "),
+       Species = str_replace(Species, "^Bacteroides_", "B. "),
+       Species = str_replace(Species, "_", " ")
+       ) %>%
+  column_to_rownames("Species")
+
+# Keep only the abundances
+bifido_bact_ra_sp <- bifido_bact_ra_sp %>% 
+  select(where(is.numeric)) %>%
+  filter(rowSums(select(., where(is.numeric))) > 0) # remove the species row if it is not present in any children's sample
+
+# Get the current row/column names
+bact_frag_rows <- grep("^B\\. fragilis", rownames(bifido_bact_ra_sp), value = TRUE)
+bifido_rows <- setdiff(grep("^B\\. ", rownames(bifido_bact_ra_sp), value = TRUE), bact_frag_rows)
+species_order <- c(bact_frag_rows, bifido_rows)
+
+# Reorder the dataframe
+bifido_bact_ra_sp_ordered <- bifido_bact_ra_sp[species_order, ]
+
+# Transpose for correlation
+bifido_bact_ra_sp_t <- t(bifido_bact_ra_sp_ordered)
+
+# Compute correlations
+rcorr_res <- Hmisc::rcorr(as.matrix(bifido_bact_ra_sp_t), type = "spearman")
+cor_mat <- rcorr_res$r
+p_mat   <- rcorr_res$P
+
+# Plot
+# pdf("Bifido_bacteroides_co-exclusion.pdf", width = 8, height = 8)
+corrplot(cor_mat, 
+         p.mat = p_mat, 
+         sig.level = 0.05,
+         type = "upper",
+         method = "circle",
+         tl.col = "black",
+         addCoef.col = "black",
+         number.cex = 0.5,
+         diag = FALSE)
+# dev.off()
+
+rm("bifido_bact_ra_sp", "bact_frag_rows", "bifido_rows", "species_order", "bifido_bact_ra_sp_ordered", "bifido_bact_ra_sp_t", "rcorr_res", "cor_mat", "p_mat")
+```
+
+# 21. Maternal and children species/SGB overlap
+```{r}
+# Identify maternal (MPST) and child (C1WST) column names
+maternal_cols <- grep("^MPST", colnames(abun_table_ra_df), value = TRUE)
+child_cols <- grep("^C1WST", colnames(abun_table_ra_df), value = TRUE)
+
+# The last 8 columns are taxonomy
+taxa_cols <- tail(colnames(abun_table_ra_df), 8)
+
+# Check overlap at the Species level
+species_overlap <- abun_table_ra_df %>%
+  dplyr::group_by(Species) %>%
+  dplyr::summarize(in_mothers = any(rowSums(dplyr::select(cur_data(), all_of(maternal_cols)) > 0) > 0), # A species is present if any row belonging to it has abundance > 0
+            in_children = any(rowSums(dplyr::select(cur_data(), all_of(child_cols)) > 0) > 0)
+            ) %>%
+  filter(!is.na(Species)) # Remove any potential NA species rows
+
+# Species in children that ARE also found in mothers
+sum(species_overlap$in_children == TRUE & species_overlap$in_mothers == TRUE)
+# 500/724 species in infants overlap with mothers
+
+# Species in children that ARE NOT found in mothers
+sum(species_overlap$in_children == TRUE & species_overlap$in_mothers == FALSE)
+# 224/724 species in infants do not overlap with mothers and come from somewhere else
+
+
+# Check overlap at the SGB level
+SGB_overlap <- abun_table_ra_df %>%
+  dplyr::group_by(SGB) %>%
+  dplyr::summarize(in_mothers = any(rowSums(dplyr::select(cur_data(), all_of(maternal_cols)) > 0) > 0),
+            in_children = any(rowSums(dplyr::select(cur_data(), all_of(child_cols)) > 0) > 0)
+            ) %>%
+  filter(!is.na(SGB))
+
+# Species in children that ARE also found in mothers
+sum(SGB_overlap$in_children == TRUE & SGB_overlap$in_mothers == TRUE)
+# 534/783 SGB in infants overlap with mothers
+
+# Species in children that ARE NOT found in mothers
+sum(SGB_overlap$in_children == TRUE & SGB_overlap$in_mothers == FALSE)
+# 249/783 SGB in infants do not overlap with mothers and come from somewhere else
+```
+
+# 22. Relative abundance in maternal samples of specific taxa
+```{r}
+# Replace "Bifidobacterium_longum" with my species of interest
+target_species_1 <- "Bifidobacterium_breve"
+target_species_2 <- "Klebsiella_pneumoniae"
+target_species_3 <- "Escherichia_coli"
+
+
+mean_abundance <- abun_table_ra_df %>%
+  filter(Species == target_species_3) %>% # Filter for the specific species
+  dplyr::select(starts_with("MPST")) %>% # Select only the maternal sample columns (MPSTxxx)
+  rowMeans() %>% # Calculate the mean across all these columns. rowMeans is used here because the species might exist in multiple rows (e.g., different SGBs)
+  mean() # Final mean across any multiple rows found
+
+cat("Mean abundance of", target_species, "in mothers:", mean_abundance, "\n")
+
+min_val <- min(abun_table_ra_df[, maternal_cols], na.rm = TRUE)
+max_val <- max(abun_table_ra_df[, maternal_cols], na.rm = TRUE)
+
+cat("Maternal Abundance Range:", min_val, "to", max_val)
+
+# Pivot maternal data to a long format for plotting
+maternal_long <- abun_table_ra_df %>%
+  dplyr::select(starts_with("MPST")) %>%
+  pivot_longer(cols = everything(), names_to = "Sample", values_to = "Abundance")
+
+# Plot the distribution
+ggplot(maternal_long, aes(x = Abundance)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white") +
+  theme_minimal() +
+  labs(title = "Distribution of Maternal Microbial Abundances",
+       x = "Relative Abundance",
+       y = "Frequency")
+
+low_abundance_pct <- mean(maternal_long$Abundance < 0.1) * 100
+cat("Percentage of observations < 0.1% abundance:", round(low_abundance_pct, 2), "%")
+```
